@@ -34,7 +34,7 @@ The Ferrous architecture is designed to achieve:
 
 Ferrous uses a **hybrid microkernel-inspired design** with pragmatic performance considerations:
 
-![alt text](res/image.png)
+![alt text](res/system_architecture_overview.png)
 
 ### Trust Boundaries
 

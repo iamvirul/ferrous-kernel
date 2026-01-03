@@ -38,7 +38,7 @@ This document describes the boot process and initialization sequence for Ferrous
 
 ## Boot Sequence Overview
 
-![alt text](res/image-1.png)
+![alt text](res/boot_sequence_overview.png)
 
 ---
 
