@@ -147,7 +147,7 @@ cargo build --release
 ## Documentation
 
 - [ROADMAP.md](docs/ROADMAP.md) - Development roadmap and milestones
-- [ARCHITECTURE.md](docs/ARCHITECTURE.md) *(coming soon)* - System architecture
+- [ARCHITECTURE.md](docs/ARCHITECTURE.md) - System architecture
 - [CONTRIBUTING.md](docs/CONTRIBUTING.md) *(coming soon)* - Contribution guidelines
 - [UNSAFE_GUIDELINES.md](docs/UNSAFE_GUIDELINES.md) *(coming soon)* - Unsafe Rust policy
 
