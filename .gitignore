@@ -1,0 +1,112 @@
+# Ferrous Kernel - Git Ignore Rules
+
+# Rust build artifacts
+/target/
+**/target/
+Cargo.lock
+*.pdb
+
+# Kernel build outputs
+*.bin
+*.elf
+*.iso
+*.img
+*.o
+*.a
+*.so
+*.d
+*.map
+
+# UEFI build artifacts
+*.efi
+
+# Debug symbols
+*.dSYM/
+*.dwarf
+
+# Assembly intermediates
+*.s
+*.asm
+
+# Linker scripts (generated)
+*-generated.ld
+
+# QEMU and emulator artifacts
+*.log
+qemu.log
+serial.log
+*.qcow2
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+*.sublime-*
+.vs/
+
+# Rust-analyzer and language server
+.rust-analyzer/
+rust-project.json
+
+# Build system artifacts
+.build/
+build/
+out/
+
+# Test artifacts
+coverage/
+*.profraw
+*.profdata
+
+# Documentation build
+/docs/_build/
+/docs/.doctrees/
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+
+# OS-specific
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Backup files
+*.bak
+*.old
+*.orig
+
+# Distribution / packaging
+dist/
+*.tar.gz
+*.zip
+
+# Virtual environments (if using Python tools)
+venv/
+env/
+.env
+
+# Secrets and credentials (just in case)
+*.key
+*.pem
+secrets/
+
+# Performance profiling
+perf.data
+perf.data.old
+flamegraph.svg
+
+# Fuzzing artifacts
+fuzz/corpus/
+fuzz/artifacts/
+
+# Bootloader artifacts
+boot/*.bin
+boot/*.o
+
+# Mount points (if testing filesystems)
+mnt/
