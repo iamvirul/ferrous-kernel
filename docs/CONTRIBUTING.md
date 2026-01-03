@@ -132,13 +132,18 @@ Explain the what and why, not the how.
 
 2. Open a Pull Request on GitHub
 
-3. Fill out the PR template with:
+3. Fill out the PR template (`.github/pull_request_template.md`) with:
    - Description of changes
    - Related issues
    - Testing performed
+   - Safety considerations (if applicable)
+   - ADR information (if applicable)
    - Any breaking changes
 
 4. Wait for review and address feedback
+   - Code owners will be automatically requested for review based on `.github/CODEOWNERS`
+   - All CI checks must pass before the PR can be merged
+   - At least one approval is required (when branch protection is enabled)
 
 ---
 

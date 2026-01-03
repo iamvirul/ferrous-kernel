@@ -1,0 +1,41 @@
+# CODEOWNERS file
+# This file defines code owners for the repository.
+# Code owners are automatically requested for review when code in their areas changes.
+#
+# Syntax: https://help.github.com/articles/about-code-owners/
+#
+# Order is important. The last matching pattern takes precedence.
+
+# Global owners - all files
+* @iamvirul
+
+# Documentation
+/docs/ @iamvirul
+
+# Architecture Decision Records
+/docs/adr/ @iamvirul
+
+# Kernel code
+/kernel/ @iamvirul
+
+# Drivers
+/drivers/ @iamvirul
+
+# Boot code
+/boot/ @iamvirul
+
+# Core libraries
+/lib/ @iamvirul
+
+# Userspace
+/userspace/ @iamvirul
+
+# GitHub workflows and templates
+/.github/ @iamvirul
+
+# Root configuration files
+/LICENSE @iamvirul
+/README.md @iamvirul
+/Cargo.toml @iamvirul
+/Cargo.lock @iamvirul
+
