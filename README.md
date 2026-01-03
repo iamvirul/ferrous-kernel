@@ -148,7 +148,8 @@ cargo build --release
 
 - [ROADMAP.md](docs/ROADMAP.md) - Development roadmap and milestones
 - [ARCHITECTURE.md](docs/ARCHITECTURE.md) - System architecture
-- [CONTRIBUTING.md](docs/CONTRIBUTING.md) *(coming soon)* - Contribution guidelines
+- [CONTRIBUTING.md](docs/CONTRIBUTING.md) - Contribution guidelines
+- [CHARTER.md](docs/CHARTER.md) - Project charter and design principles
 - [UNSAFE_GUIDELINES.md](docs/UNSAFE_GUIDELINES.md) *(coming soon)* - Unsafe Rust policy
 
 ---
@@ -179,14 +180,27 @@ See [ROADMAP.md](docs/ROADMAP.md) for complete details.
 
 ## Contributing
 
-This is a research project with high technical standards. Contributions are welcome, but expect:
+Contributions are welcome! Ferrous Kernel is an open-source research project. We value contributions of all kinds:
 
-- **Rigorous code review** - Especially for unsafe code
-- **Design justification** - Major changes need Architecture Decision Records
-- **Test coverage** - New code needs tests
-- **Documentation** - Code should be understandable
+- Code contributions
+- Documentation improvements
+- Bug reports and fixes
+- Architecture discussions and ADRs
+- Testing and feedback
 
-*(Detailed contributing guide coming soon)*
+**Getting Started:**
+- Read [CONTRIBUTING.md](docs/CONTRIBUTING.md) for detailed guidelines
+- Check [open issues](https://github.com/iamvirul/ferrous-kernel/issues) for tasks
+- Review the [ROADMAP.md](docs/ROADMAP.md) for current phase work
+- Join discussions and share ideas
+
+**What to Expect:**
+- Rigorous code review (especially for unsafe code)
+- Design justification for major changes (ADRs)
+- High standards for correctness and safety
+- Collaborative and respectful environment
+
+See [CONTRIBUTING.md](docs/CONTRIBUTING.md) for the complete contribution guide.
 
 ---
 
@@ -206,7 +220,9 @@ These might be explored later, but not during core development.
 
 ## License
 
-*(To be determined - likely permissive open source)*
+This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
+
+Apache 2.0 is a permissive open-source license that provides explicit patent protection and allows for flexible use, including in commercial and proprietary contexts. This license is popular in the Rust ecosystem and modern software development.
 
 ---
 
@@ -237,13 +253,7 @@ A: Initially only QEMU x86_64. Real hardware support comes later. ARM64 is plann
 A: Not yet. This is research-grade software. Stability and completeness are years away.
 
 **Q: How can I help?**
-A: Star the repo, follow development, provide feedback on designs. Code contributions welcome once Phase 1 begins.
-
----
-
-## Contact
-
-*(Project communication channels to be established)*
+A: Check out [CONTRIBUTING.md](docs/CONTRIBUTING.md) for ways to contribute. We welcome code contributions, documentation improvements, bug reports, and architectural discussions.
 
 ---
 
