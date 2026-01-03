@@ -168,7 +168,7 @@ Explain the what and why, not the how.
 
 3. **Isolation** - Wrap unsafe code behind safe APIs
 
-See [CLAUDE.md](../CLAUDE.md) for detailed unsafe Rust guidelines.
+See [UNSAFE_GUIDELINES.md](UNSAFE_GUIDELINES.md) for the complete unsafe Rust policy.
 
 **Example:**
 ```rust

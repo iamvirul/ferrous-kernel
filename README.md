@@ -150,7 +150,7 @@ cargo build --release
 - [ARCHITECTURE.md](docs/ARCHITECTURE.md) - System architecture
 - [CONTRIBUTING.md](docs/CONTRIBUTING.md) - Contribution guidelines
 - [CHARTER.md](docs/CHARTER.md) - Project charter and design principles
-- [UNSAFE_GUIDELINES.md](docs/UNSAFE_GUIDELINES.md) *(coming soon)* - Unsafe Rust policy
+- [UNSAFE_GUIDELINES.md](docs/UNSAFE_GUIDELINES.md) - Unsafe Rust policy
 
 ---
 

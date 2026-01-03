@@ -589,6 +589,8 @@ Ferrous provides a capability-based system call interface:
 **Future Documents**:
 - `docs/SCHEDULER_ARCHITECTURE.md` - Scheduler design (Phase 2)
 - `docs/OBSERVABILITY_ARCHITECTURE.md` - Observability design (Phase 4)
+
+**Policy Documents**:
 - `docs/UNSAFE_GUIDELINES.md` - Unsafe Rust policy
 - `docs/adr/` - Architecture Decision Records
 
