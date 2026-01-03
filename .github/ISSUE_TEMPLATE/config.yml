@@ -1,0 +1,9 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation
+    url: https://github.com/iamvirul/ferrous-kernel/tree/main/docs
+    about: Read the project documentation and architecture guides
+  - name: ADR Process
+    url: https://github.com/iamvirul/ferrous-kernel/tree/main/docs/adr
+    about: Learn about Architecture Decision Records and when to create them
+

@@ -130,7 +130,7 @@ ferrous-kernel/
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/ferrous-kernel.git
+git clone https://github.com/iamvirul/ferrous-kernel.git
 cd ferrous-kernel
 
 # Build the kernel
