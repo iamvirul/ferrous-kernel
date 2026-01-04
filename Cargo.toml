@@ -16,17 +16,17 @@ documentation = "https://github.com/iamvirul/ferrous-kernel"
 
 [workspace.lints.clippy]
 # Deny warnings in CI, but allow in development
-warnings = true
+warnings = "warn"
 
 [workspace.lints.clippy.nursery]
-warnings = true
+warnings = "warn"
 
 [workspace.lints.clippy.restriction]
-warnings = true
+warnings = "warn"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"  # Encourage safe code, unsafe must be explicit
-warnings = true
+warnings = "warn"
 
 [workspace.dependencies]
 # Core dependencies will be added as needed
