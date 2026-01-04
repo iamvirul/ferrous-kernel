@@ -1,0 +1,180 @@
+{
+  "labels": [
+    {
+      "name": "phase-0",
+      "description": "Phase 0: Foundation & Design",
+      "color": "0052CC"
+    },
+    {
+      "name": "phase-1",
+      "description": "Phase 1: Proof of Life",
+      "color": "0052CC"
+    },
+    {
+      "name": "phase-2",
+      "description": "Phase 2: Core Kernel Services",
+      "color": "0052CC"
+    },
+    {
+      "name": "phase-3",
+      "description": "Phase 3: Isolation & Fault Containment",
+      "color": "0052CC"
+    },
+    {
+      "name": "phase-4",
+      "description": "Phase 4: Modern Workloads",
+      "color": "0052CC"
+    },
+    {
+      "name": "phase-5",
+      "description": "Phase 5: Validation",
+      "color": "0052CC"
+    },
+    {
+      "name": "milestone-1.1",
+      "description": "Milestone 1.1: Bare Metal Boot",
+      "color": "5319E7"
+    },
+    {
+      "name": "milestone-1.2",
+      "description": "Milestone 1.2: Runtime Setup",
+      "color": "5319E7"
+    },
+    {
+      "name": "milestone-1.3",
+      "description": "Milestone 1.3: Memory Management Foundation",
+      "color": "5319E7"
+    },
+    {
+      "name": "milestone-1.4",
+      "description": "Milestone 1.4: Core Infrastructure",
+      "color": "5319E7"
+    },
+    {
+      "name": "priority-critical",
+      "description": "Critical priority - blocks other work",
+      "color": "B60205"
+    },
+    {
+      "name": "priority-high",
+      "description": "High priority - important work",
+      "color": "D93F0B"
+    },
+    {
+      "name": "priority-medium",
+      "description": "Medium priority - normal work",
+      "color": "FBBD0C"
+    },
+    {
+      "name": "priority-low",
+      "description": "Low priority - nice to have",
+      "color": "0E8A16"
+    },
+    {
+      "name": "type-bug",
+      "description": "Bug fix",
+      "color": "D73A4A"
+    },
+    {
+      "name": "type-enhancement",
+      "description": "Feature enhancement",
+      "color": "A2EEEF"
+    },
+    {
+      "name": "type-documentation",
+      "description": "Documentation changes",
+      "color": "0075CA"
+    },
+    {
+      "name": "type-infrastructure",
+      "description": "Infrastructure/build system changes",
+      "color": "7057FF"
+    },
+    {
+      "name": "type-refactor",
+      "description": "Code refactoring",
+      "color": "C5DEF5"
+    },
+    {
+      "name": "type-test",
+      "description": "Test additions or updates",
+      "color": "BFD4F2"
+    },
+    {
+      "name": "status-blocked",
+      "description": "Blocked by dependencies or issues",
+      "color": "E99695"
+    },
+    {
+      "name": "status-in-progress",
+      "description": "Currently being worked on",
+      "color": "FBCA04"
+    },
+    {
+      "name": "status-review",
+      "description": "Ready for review",
+      "color": "0E8A16"
+    },
+    {
+      "name": "status-waiting",
+      "description": "Waiting for something",
+      "color": "C2E0C6"
+    },
+    {
+      "name": "component-boot",
+      "description": "Boot process and initialization",
+      "color": "1D76DB"
+    },
+    {
+      "name": "component-memory",
+      "description": "Memory management",
+      "color": "1D76DB"
+    },
+    {
+      "name": "component-scheduler",
+      "description": "Scheduler and task management",
+      "color": "1D76DB"
+    },
+    {
+      "name": "component-ipc",
+      "description": "Inter-process communication",
+      "color": "1D76DB"
+    },
+    {
+      "name": "component-capabilities",
+      "description": "Capability system",
+      "color": "1D76DB"
+    },
+    {
+      "name": "component-drivers",
+      "description": "Device drivers",
+      "color": "1D76DB"
+    },
+    {
+      "name": "component-infrastructure",
+      "description": "Core infrastructure (logging, etc.)",
+      "color": "1D76DB"
+    },
+    {
+      "name": "good-first-issue",
+      "description": "Good for newcomers",
+      "color": "7057FF"
+    },
+    {
+      "name": "help-wanted",
+      "description": "Help is wanted",
+      "color": "008672"
+    },
+    {
+      "name": "needs-adr",
+      "description": "Requires Architecture Decision Record",
+      "color": "F9D0C4"
+    },
+    {
+      "name": "breaking-change",
+      "description": "Breaking change",
+      "color": "B60205"
+    }
+  ]
+}
+

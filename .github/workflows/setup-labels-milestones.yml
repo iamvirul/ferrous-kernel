@@ -1,0 +1,136 @@
+name: Setup Labels and Milestones
+
+on:
+  workflow_dispatch:  # Manual trigger
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/setup-labels-milestones.yml'
+      - '.github/labels.json'
+      - '.github/milestones.json'
+
+jobs:
+  setup-labels:
+    name: Setup Labels
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install GitHub CLI
+        run: |
+          type -p curl >/dev/null || (apt update && apt install curl -y)
+          curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
+          && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
+          && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
+          && apt update \
+          && apt install gh -y
+      
+      - name: Authenticate GitHub CLI
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh auth setup-git
+      
+      - name: Create Labels
+        run: |
+          # Phase labels
+          gh label create "phase-0" --description "Phase 0: Foundation & Design" --color "0052CC" --force || true
+          gh label create "phase-1" --description "Phase 1: Proof of Life" --color "0052CC" --force || true
+          gh label create "phase-2" --description "Phase 2: Core Kernel Services" --color "0052CC" --force || true
+          gh label create "phase-3" --description "Phase 3: Isolation & Fault Containment" --color "0052CC" --force || true
+          gh label create "phase-4" --description "Phase 4: Modern Workloads" --color "0052CC" --force || true
+          gh label create "phase-5" --description "Phase 5: Validation" --color "0052CC" --force || true
+          
+          # Milestone labels
+          gh label create "milestone-1.1" --description "Milestone 1.1: Bare Metal Boot" --color "5319E7" --force || true
+          gh label create "milestone-1.2" --description "Milestone 1.2: Runtime Setup" --color "5319E7" --force || true
+          gh label create "milestone-1.3" --description "Milestone 1.3: Memory Management Foundation" --color "5319E7" --force || true
+          gh label create "milestone-1.4" --description "Milestone 1.4: Core Infrastructure" --color "5319E7" --force || true
+          
+          # Priority labels
+          gh label create "priority-critical" --description "Critical priority - blocks other work" --color "B60205" --force || true
+          gh label create "priority-high" --description "High priority - important work" --color "D93F0B" --force || true
+          gh label create "priority-medium" --description "Medium priority - normal work" --color "FBBD0C" --force || true
+          gh label create "priority-low" --description "Low priority - nice to have" --color "0E8A16" --force || true
+          
+          # Type labels
+          gh label create "type-bug" --description "Bug fix" --color "D73A4A" --force || true
+          gh label create "type-enhancement" --description "Feature enhancement" --color "A2EEEF" --force || true
+          gh label create "type-documentation" --description "Documentation changes" --color "0075CA" --force || true
+          gh label create "type-infrastructure" --description "Infrastructure/build system changes" --color "7057FF" --force || true
+          gh label create "type-refactor" --description "Code refactoring" --color "C5DEF5" --force || true
+          gh label create "type-test" --description "Test additions or updates" --color "BFD4F2" --force || true
+          
+          # Status labels
+          gh label create "status-blocked" --description "Blocked by dependencies or issues" --color "E99695" --force || true
+          gh label create "status-in-progress" --description "Currently being worked on" --color "FBCA04" --force || true
+          gh label create "status-review" --description "Ready for review" --color "0E8A16" --force || true
+          gh label create "status-waiting" --description "Waiting for something" --color "C2E0C6" --force || true
+          
+          # Component labels
+          gh label create "component-boot" --description "Boot process and initialization" --color "1D76DB" --force || true
+          gh label create "component-memory" --description "Memory management" --color "1D76DB" --force || true
+          gh label create "component-scheduler" --description "Scheduler and task management" --color "1D76DB" --force || true
+          gh label create "component-ipc" --description "Inter-process communication" --color "1D76DB" --force || true
+          gh label create "component-capabilities" --description "Capability system" --color "1D76DB" --force || true
+          gh label create "component-drivers" --description "Device drivers" --color "1D76DB" --force || true
+          gh label create "component-infrastructure" --description "Core infrastructure (logging, etc.)" --color "1D76DB" --force || true
+          
+          # Special labels
+          gh label create "good-first-issue" --description "Good for newcomers" --color "7057FF" --force || true
+          gh label create "help-wanted" --description "Help is wanted" --color "008672" --force || true
+          gh label create "needs-adr" --description "Requires Architecture Decision Record" --color "F9D0C4" --force || true
+          gh label create "breaking-change" --description "Breaking change" --color "B60205" --force || true
+
+  setup-milestones:
+    name: Setup Milestones
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install GitHub CLI
+        run: |
+          type -p curl >/dev/null || (apt update && apt install curl -y)
+          curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
+          && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
+          && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
+          && apt update \
+          && apt install gh -y
+      
+      - name: Authenticate GitHub CLI
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh auth setup-git
+      
+      - name: Create Phase 1 Milestones
+        env:
+          REPO: ${{ github.repository }}
+        run: |
+          # Phase 1 Main Milestone
+          gh api repos/$REPO/milestones -X POST -f title="Phase 1: Proof of Life" \
+            -f description="Boot into kernel space and establish basic runtime environment. Goal: Kernel boots on QEMU x86_64 and can print 'Hello from Ferrous!' to serial console." \
+            -f due_on="2026-09-30T00:00:00Z" || echo "Milestone 'Phase 1: Proof of Life' may already exist"
+          
+          # Milestone 1.1: Bare Metal Boot
+          gh api repos/$REPO/milestones -X POST -f title="1.1 - Bare Metal Boot" \
+            -f description="UEFI bootloader integration, kernel entry point handoff, basic serial output, and verification on QEMU and hardware." \
+            -f due_on="2026-05-31T00:00:00Z" || echo "Milestone '1.1 - Bare Metal Boot' may already exist"
+          
+          # Milestone 1.2: Runtime Setup
+          gh api repos/$REPO/milestones -X POST -f title="1.2 - Runtime Setup" \
+            -f description="Set up kernel stack, initialize GDT and IDT, configure exception handlers." \
+            -f due_on="2026-06-30T00:00:00Z" || echo "Milestone '1.2 - Runtime Setup' may already exist"
+          
+          # Milestone 1.3: Memory Management Foundation
+          gh api repos/$REPO/milestones -X POST -f title="1.3 - Memory Management Foundation" \
+            -f description="Parse UEFI memory map, implement physical memory allocator, set up virtual memory with paging, implement page table management, and kernel heap allocator." \
+            -f due_on="2026-07-31T00:00:00Z" || echo "Milestone '1.3 - Memory Management Foundation' may already exist"
+          
+          # Milestone 1.4: Core Infrastructure
+          gh api repos/$REPO/milestones -X POST -f title="1.4 - Core Infrastructure" \
+            -f description="Logging framework, panic handler with stack traces, basic assertions and debug macros, serial console driver." \
+            -f due_on="2026-08-31T00:00:00Z" || echo "Milestone '1.4 - Core Infrastructure' may already exist"
+

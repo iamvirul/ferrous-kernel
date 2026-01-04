@@ -1,0 +1,35 @@
+{
+  "milestones": [
+    {
+      "title": "Phase 1: Proof of Life",
+      "description": "Boot into kernel space and establish basic runtime environment.\n\n**Goal:** Kernel boots on QEMU x86_64 and can print 'Hello from Ferrous!' to serial console.\n\n**Success Criteria:**\n- Kernel boots on QEMU x86_64\n- Can print 'Hello from Ferrous!' to serial console\n- Page fault handler catches and reports violations\n- Clean panic messages with source locations",
+      "due_on": "2026-09-30T00:00:00Z",
+      "state": "open"
+    },
+    {
+      "title": "1.1 - Bare Metal Boot",
+      "description": "Establish kernel boot process with UEFI integration.\n\n**Deliverables:**\n- UEFI bootloader integration\n- Handoff to kernel entry point\n- Basic serial output (no formatting)\n- Verify execution on real hardware and QEMU",
+      "due_on": "2026-05-31T00:00:00Z",
+      "state": "open"
+    },
+    {
+      "title": "1.2 - Runtime Setup",
+      "description": "Set up kernel runtime environment.\n\n**Deliverables:**\n- Set up kernel stack\n- Initialize GDT (Global Descriptor Table)\n- Configure IDT (Interrupt Descriptor Table)\n- Basic exception handlers (panic, page fault)",
+      "due_on": "2026-06-30T00:00:00Z",
+      "state": "open"
+    },
+    {
+      "title": "1.3 - Memory Management Foundation",
+      "description": "Implement foundational memory management.\n\n**Deliverables:**\n- Parse UEFI memory map\n- Physical memory allocator (buddy/bitmap)\n- Virtual memory setup (identity mapping, higher-half kernel)\n- Page table management\n- Kernel heap allocator",
+      "due_on": "2026-07-31T00:00:00Z",
+      "state": "open"
+    },
+    {
+      "title": "1.4 - Core Infrastructure",
+      "description": "Implement core kernel infrastructure.\n\n**Deliverables:**\n- Logging framework (structured, level-based)\n- Panic handler with stack traces\n- Basic assertions and debug macros\n- Serial console driver",
+      "due_on": "2026-08-31T00:00:00Z",
+      "state": "open"
+    }
+  ]
+}
+
