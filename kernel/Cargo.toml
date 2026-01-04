@@ -6,10 +6,6 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 
-[lib]
-name = "ferrous_kernel"
-crate-type = ["staticlib"]
-
 [[bin]]
 name = "ferrous-kernel"
 path = "src/main.rs"
