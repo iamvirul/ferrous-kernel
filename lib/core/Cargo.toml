@@ -1,0 +1,15 @@
+[package]
+name = "ferrous-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "ferrous_core"
+crate-type = ["lib"]
+
+[dependencies]
+# Core library has no dependencies (pure no_std)
+

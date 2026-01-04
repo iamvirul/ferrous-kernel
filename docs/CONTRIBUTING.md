@@ -148,11 +148,14 @@ Explain the what and why, not the how.
 
 ## Code Standards
 
+**See [CODING_STANDARDS.md](CODING_STANDARDS.md) for complete coding standards and style guidelines.**
+
 ### Rust Style
 
 - Follow standard Rust formatting: `cargo fmt`
 - Follow Rust API guidelines where applicable
 - Use `rustfmt` and `clippy` - warnings are errors in CI
+- See [CODING_STANDARDS.md](CODING_STANDARDS.md) for detailed style guidelines
 
 ### Unsafe Code
 

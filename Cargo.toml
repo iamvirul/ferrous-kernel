@@ -1,0 +1,45 @@
+[workspace]
+members = [
+    "kernel",
+    "lib/core",
+    "lib/alloc",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Ferrous Kernel Contributors"]
+license = "Apache-2.0"
+repository = "https://github.com/iamvirul/ferrous-kernel"
+documentation = "https://github.com/iamvirul/ferrous-kernel"
+
+[workspace.lints.clippy]
+# Deny warnings in CI, but allow in development
+warnings = "warn"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"  # Encourage safe code, unsafe must be explicit
+warnings = "warn"
+
+[workspace.dependencies]
+# Core dependencies will be added as needed
+# Placeholder for future dependencies
+
+[profile.dev]
+opt-level = 0
+debug = true
+strip = false
+
+[profile.release]
+opt-level = 3
+debug = false
+strip = true
+lto = true
+codegen-units = 1
+panic = "abort"
+
+[profile.test]
+opt-level = 0
+debug = true
+

@@ -35,16 +35,16 @@ Every milestone must advance these core goals:
 
 - [x] Project charter and vision document
 - [x] Repository structure
-- [ ] Development environment setup guide
-- [ ] Coding standards and unsafe Rust guidelines
-- [ ] Architecture Decision Records (ADR) template
-- [ ] Build system (cargo-based)
-- [ ] CI/CD pipeline skeleton
-- [ ] Initial design documents:
-  - [ ] Memory management architecture
-  - [ ] Capability system design
-  - [ ] IPC mechanism design
-  - [ ] Boot process overview
+- [x] Development environment setup guide
+- [x] Coding standards and unsafe Rust guidelines
+- [x] Architecture Decision Records (ADR) template
+- [x] Build system (cargo-based)
+- [x] CI/CD pipeline skeleton
+- [x] Initial design documents:
+  - [x] Memory management architecture
+  - [x] Capability system design
+  - [x] IPC mechanism design
+  - [x] Boot process overview
 
 ### Success Criteria
 

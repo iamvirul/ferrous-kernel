@@ -1,0 +1,20 @@
+[package]
+name = "ferrous-kernel"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "ferrous-kernel"
+path = "src/main.rs"
+
+[dependencies]
+ferrous-core = { path = "../lib/core" }
+ferrous-alloc = { path = "../lib/alloc", optional = true }
+
+[features]
+default = []
+alloc = ["ferrous-alloc"]
+
