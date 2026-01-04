@@ -578,7 +578,6 @@ Ferrous provides a capability-based system call interface:
 **Must Read Before Implementation**:
 - [CHARTER.md](CHARTER.md) - Project goals and principles
 - [ROADMAP.md](ROADMAP.md) - Development timeline
-- [CLAUDE.md](../CLAUDE.md) - Development guidelines
 
 **Detailed Design Documents** (Phase 0 deliverables):
 - `docs/MEMORY_ARCHITECTURE.md` - Memory management design

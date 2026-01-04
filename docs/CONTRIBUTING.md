@@ -38,7 +38,6 @@ Before contributing, make sure you have:
    - [CHARTER.md](CHARTER.md) - Project goals and design principles
    - [ARCHITECTURE.md](ARCHITECTURE.md) - System architecture
    - [ROADMAP.md](ROADMAP.md) - Development phases and milestones
-   - [CLAUDE.md](../CLAUDE.md) - Development guidelines
 
 3. Check the current phase and available work:
    - Review the [ROADMAP.md](ROADMAP.md) for current phase deliverables

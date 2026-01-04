@@ -92,7 +92,6 @@ ADRs have the following statuses:
 
 - [CHARTER.md](../CHARTER.md) - Design principles and project goals
 - [ARCHITECTURE.md](../ARCHITECTURE.md) - System architecture overview
-- [CLAUDE.md](../../CLAUDE.md) - Development guidelines
 
 ---
 
