@@ -124,7 +124,7 @@ ferrous-kernel/
 - QEMU (for testing)
 - Cross-compilation tools for x86_64
 
-*(Detailed setup guide coming in Phase 0)*
+See [SETUP.md](docs/SETUP.md) for detailed setup instructions.
 
 ### Building
 
@@ -140,7 +140,7 @@ cargo build --release
 ./scripts/run-qemu.sh
 ```
 
-*(Build system is work-in-progress)*
+See [SETUP.md](docs/SETUP.md) for complete setup and build instructions.
 
 ---
 
@@ -148,7 +148,9 @@ cargo build --release
 
 - [ROADMAP.md](docs/ROADMAP.md) - Development roadmap and milestones
 - [ARCHITECTURE.md](docs/ARCHITECTURE.md) - System architecture
+- [SETUP.md](docs/SETUP.md) - Development environment setup guide
 - [CONTRIBUTING.md](docs/CONTRIBUTING.md) - Contribution guidelines
+- [CODING_STANDARDS.md](docs/CODING_STANDARDS.md) - Coding standards and style guide
 - [CHARTER.md](docs/CHARTER.md) - Project charter and design principles
 - [UNSAFE_GUIDELINES.md](docs/UNSAFE_GUIDELINES.md) - Unsafe Rust policy
 
