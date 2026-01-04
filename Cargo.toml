@@ -16,7 +16,6 @@ documentation = "https://github.com/iamvirul/ferrous-kernel"
 
 [workspace.lints.clippy]
 # Deny warnings in CI, but allow in development
-all-targets = true
 warnings = true
 
 [workspace.lints.clippy.nursery]
