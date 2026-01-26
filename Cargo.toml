@@ -1,3 +1,12 @@
+[package]
+name = "ferrous-kernel-tests"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Integration tests for Ferrous Kernel"
+
 [workspace]
 members = [
     "boot",
