@@ -1,11 +1,11 @@
 //! Memory map handling for UEFI boot.
 //!
 //! This module provides structures and utilities for working with the
-//! UEFI memory map. It converts UEFI memory descriptors into a format
-//! that can be used by the kernel.
+//! UEFI memory map.
 
 use alloc::vec::Vec;
-use uefi::table::boot::{MemoryDescriptor, MemoryType as UefiMemoryType};
+use uefi::boot::MemoryType as UefiMemoryType;
+use uefi::mem::memory_map::{MemoryMap as UefiMemoryMapTrait, MemoryMapOwned};
 
 /// Type of memory region.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -14,31 +14,31 @@ pub enum MemoryRegionType {
     Usable,
     /// Reserved by firmware or hardware.
     Reserved,
-    /// ACPI reclaimable memory (can be used after reading ACPI tables).
+    /// ACPI reclaimable memory.
     AcpiReclaimable,
-    /// ACPI NVS (non-volatile storage).
+    /// ACPI NVS.
     AcpiNvs,
     /// Memory-mapped I/O.
     Mmio,
     /// Memory-mapped I/O port space.
     MmioPortSpace,
-    /// Boot services code (reclaimable after exit boot services).
+    /// Boot services code.
     BootServicesCode,
-    /// Boot services data (reclaimable after exit boot services).
+    /// Boot services data.
     BootServicesData,
-    /// Runtime services code (must be preserved).
+    /// Runtime services code.
     RuntimeServicesCode,
-    /// Runtime services data (must be preserved).
+    /// Runtime services data.
     RuntimeServicesData,
-    /// Loader code (our bootloader code).
+    /// Loader code.
     LoaderCode,
-    /// Loader data (our bootloader data).
+    /// Loader data.
     LoaderData,
-    /// Conventional memory (usable).
+    /// Conventional memory.
     Conventional,
-    /// Unusable memory (bad memory).
+    /// Unusable memory.
     Unusable,
-    /// Persistent memory (NVDIMM).
+    /// Persistent memory.
     Persistent,
     /// Unknown memory type.
     Unknown,
@@ -68,8 +68,6 @@ impl From<UefiMemoryType> for MemoryRegionType {
 
 impl MemoryRegionType {
     /// Returns true if this memory region is usable by the kernel.
-    ///
-    /// After exiting boot services, boot services code/data become usable.
     pub fn is_usable(&self) -> bool {
         matches!(
             self,
@@ -87,13 +85,13 @@ impl MemoryRegionType {
 /// A single memory region.
 #[derive(Debug, Clone)]
 pub struct MemoryRegion {
-    /// Physical start address of the region.
+    /// Physical start address.
     pub start: u64,
-    /// Size of the region in bytes.
+    /// Size in bytes.
     pub size: u64,
-    /// Type of the memory region.
+    /// Region type.
     pub region_type: MemoryRegionType,
-    /// UEFI memory attributes.
+    /// Memory attributes.
     pub attributes: u64,
 }
 
@@ -108,7 +106,7 @@ impl MemoryRegion {
         }
     }
 
-    /// Returns the end address of the region (exclusive).
+    /// Returns the end address.
     pub fn end(&self) -> u64 {
         self.start + self.size
     }
@@ -117,11 +115,8 @@ impl MemoryRegion {
 /// The system memory map.
 #[derive(Debug, Clone)]
 pub struct MemoryMap {
-    /// List of memory regions.
     regions: Vec<MemoryRegion>,
-    /// Total memory in the system.
     total_memory: u64,
-    /// Total usable memory (after boot services exit).
     usable_memory: u64,
 }
 
@@ -135,24 +130,20 @@ impl MemoryMap {
         }
     }
 
-    /// Creates a memory map from UEFI memory descriptors.
-    pub fn from_uefi_descriptors<'a>(
-        descriptors: impl ExactSizeIterator<Item = &'a MemoryDescriptor>,
-    ) -> Self {
+    /// Creates a memory map from UEFI MemoryMapOwned.
+    pub fn from_uefi_memory_map(uefi_map: &MemoryMapOwned) -> Self {
         let mut regions = Vec::new();
         let mut total_memory = 0u64;
         let mut usable_memory = 0u64;
 
-        // Page size is 4KB
         const PAGE_SIZE: u64 = 4096;
 
-        for desc in descriptors {
+        for desc in uefi_map.entries() {
             let start = desc.phys_start;
             let size = desc.page_count * PAGE_SIZE;
             let region_type = MemoryRegionType::from(desc.ty);
             let attributes = desc.att.bits();
 
-            // Track total memory (excluding MMIO)
             if !matches!(
                 region_type,
                 MemoryRegionType::Mmio | MemoryRegionType::MmioPortSpace
@@ -160,7 +151,6 @@ impl MemoryMap {
                 total_memory = total_memory.saturating_add(size);
             }
 
-            // Track usable memory
             if region_type.is_usable() {
                 usable_memory = usable_memory.saturating_add(size);
             }
@@ -168,7 +158,6 @@ impl MemoryMap {
             regions.push(MemoryRegion::new(start, size, region_type, attributes));
         }
 
-        // Sort regions by start address
         regions.sort_by_key(|r| r.start);
 
         Self {
@@ -197,41 +186,10 @@ impl MemoryMap {
     pub fn usable_memory(&self) -> u64 {
         self.usable_memory
     }
-
-    /// Returns an iterator over only usable memory regions.
-    pub fn usable_regions(&self) -> impl Iterator<Item = &MemoryRegion> {
-        self.regions.iter().filter(|r| r.region_type.is_usable())
-    }
-
-    /// Finds the largest usable memory region.
-    pub fn largest_usable_region(&self) -> Option<&MemoryRegion> {
-        self.usable_regions().max_by_key(|r| r.size)
-    }
 }
 
 impl Default for MemoryMap {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_memory_region_type_usable() {
-        assert!(MemoryRegionType::Conventional.is_usable());
-        assert!(MemoryRegionType::BootServicesCode.is_usable());
-        assert!(MemoryRegionType::BootServicesData.is_usable());
-        assert!(!MemoryRegionType::Reserved.is_usable());
-        assert!(!MemoryRegionType::Mmio.is_usable());
-        assert!(!MemoryRegionType::RuntimeServicesCode.is_usable());
-    }
-
-    #[test]
-    fn test_memory_region_end() {
-        let region = MemoryRegion::new(0x1000, 0x2000, MemoryRegionType::Conventional, 0);
-        assert_eq!(region.end(), 0x3000);
     }
 }

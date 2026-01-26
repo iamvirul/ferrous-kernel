@@ -12,12 +12,13 @@ name = "ferrous-boot"
 path = "src/main.rs"
 
 [dependencies]
-uefi = { version = "0.32", features = ["alloc", "logger"] }
+uefi = { version = "0.33", features = ["alloc", "global_allocator", "logger"] }
 log = { version = "0.4", default-features = false }
 
-[lints]
-workspace = true
-
+# Boot code requires unsafe for UEFI interface, so we don't inherit workspace lints
 [lints.rust]
-# Boot code requires unsafe for UEFI interface - override workspace default
 unsafe_code = "warn"
+warnings = "warn"
+
+[lints.clippy]
+warnings = "warn"
