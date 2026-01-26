@@ -1,0 +1,24 @@
+[package]
+name = "ferrous-boot"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "UEFI bootloader for Ferrous Kernel"
+
+[[bin]]
+name = "ferrous-boot"
+path = "src/main.rs"
+
+[dependencies]
+uefi = { version = "0.33", features = ["alloc", "global_allocator", "logger"] }
+log = { version = "0.4", default-features = false }
+
+# Boot code requires unsafe for UEFI interface, so we don't inherit workspace lints
+[lints.rust]
+unsafe_code = "warn"
+warnings = "warn"
+
+[lints.clippy]
+warnings = "warn"

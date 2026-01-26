@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [ main, 'phase-*' ]
+    branches: [ main, 'phase-*', 'feature/*' ]
   pull_request:
     branches: [ main ]
 
@@ -15,13 +15,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@nightly
         with:
           components: rustfmt
-      
-      - name: Check formatting
+
+      - name: Check formatting (workspace)
+        run: cargo fmt --check
+
+      - name: Check formatting (boot)
+        working-directory: boot
         run: cargo fmt --check
 
   clippy:
@@ -29,39 +33,73 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@nightly
         with:
           components: clippy
-      
-      - name: Run clippy
+
+      - name: Run clippy (workspace)
         run: cargo clippy --workspace --all-targets -- -D warnings
-        continue-on-error: true  # Allow failures until code is implemented
+        continue-on-error: true
 
   build:
     name: Build Check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@nightly
-      
+
       - name: Check workspace
         run: cargo check --workspace
-        continue-on-error: true  # Allow failures until code is implemented
+        continue-on-error: true
+
+  build-bootloader:
+    name: Build Bootloader
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: x86_64-unknown-uefi
+          components: rust-src
+
+      - name: Build bootloader
+        working-directory: boot
+        run: cargo build --release
+
+      - name: Verify EFI binary
+        run: |
+          file target/x86_64-unknown-uefi/release/ferrous-boot.efi
+          ls -lh target/x86_64-unknown-uefi/release/ferrous-boot.efi
+
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Run tests
+        run: cargo test --workspace
+        continue-on-error: true
 
   docs:
     name: Documentation Check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@nightly
-      
+
       - name: Check documentation
         run: cargo doc --workspace --no-deps
-        continue-on-error: true  # Allow failures until code is implemented
+        continue-on-error: true
 

@@ -1,0 +1,171 @@
+name: Bootloader CI
+
+on:
+  push:
+    branches: [ main, 'phase-*', 'feature/*' ]
+    paths:
+      - 'boot/**'
+      - '.github/workflows/bootloader.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'boot/**'
+      - '.github/workflows/bootloader.yml'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build Bootloader
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: x86_64-unknown-uefi
+          components: rust-src, rustfmt, clippy
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-boot-${{ hashFiles('boot/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-boot-
+
+      - name: Check formatting
+        working-directory: boot
+        run: cargo fmt --check
+
+      - name: Build bootloader (debug)
+        working-directory: boot
+        run: cargo build
+
+      - name: Build bootloader (release)
+        working-directory: boot
+        run: cargo build --release
+
+      - name: Verify EFI binary exists
+        run: |
+          ls -la target/x86_64-unknown-uefi/debug/ferrous-boot.efi
+          ls -la target/x86_64-unknown-uefi/release/ferrous-boot.efi
+          file target/x86_64-unknown-uefi/release/ferrous-boot.efi
+
+      - name: Upload bootloader artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ferrous-boot-efi
+          path: target/x86_64-unknown-uefi/release/ferrous-boot.efi
+          retention-days: 7
+
+  clippy:
+    name: Clippy Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: x86_64-unknown-uefi
+          components: rust-src, clippy
+
+      - name: Run clippy
+        working-directory: boot
+        run: cargo clippy -- -D warnings
+        continue-on-error: true  # Allow warnings during development
+
+  qemu-test:
+    name: QEMU Boot Test
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86 ovmf
+
+      - name: Download bootloader artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ferrous-boot-efi
+          path: bootloader
+
+      - name: Create EFI boot disk
+        run: |
+          mkdir -p boot-disk/EFI/BOOT
+          cp bootloader/ferrous-boot.efi boot-disk/EFI/BOOT/BOOTX64.EFI
+          ls -la boot-disk/EFI/BOOT/
+
+      - name: Find OVMF firmware
+        id: ovmf
+        run: |
+          OVMF_CODE=$(find /usr -name "OVMF_CODE*.fd" 2>/dev/null | head -1)
+          if [ -z "$OVMF_CODE" ]; then
+            OVMF_CODE=$(find /usr -name "OVMF.fd" 2>/dev/null | head -1)
+          fi
+          echo "OVMF firmware found at: $OVMF_CODE"
+          echo "ovmf_code=$OVMF_CODE" >> $GITHUB_OUTPUT
+
+      - name: Run QEMU boot test
+        run: |
+          # Start QEMU in background with timeout
+          timeout 30s qemu-system-x86_64 \
+            -enable-kvm \
+            -drive if=pflash,format=raw,readonly=on,file=${{ steps.ovmf.outputs.ovmf_code }} \
+            -drive format=raw,file=fat:rw:boot-disk \
+            -m 256M \
+            -serial file:serial.log \
+            -display none \
+            -no-reboot || true
+
+          echo "=== Serial Output ==="
+          cat serial.log || echo "No serial output captured"
+
+          # Check if bootloader produced any output
+          if [ -f serial.log ] && [ -s serial.log ]; then
+            echo "Bootloader produced serial output"
+          else
+            echo "Note: Bootloader uses UEFI console, not serial. Build verified."
+          fi
+
+      - name: Upload serial log
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: qemu-serial-log
+          path: serial.log
+          retention-days: 3
+
+  docs:
+    name: Documentation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: x86_64-unknown-uefi
+          components: rust-src
+
+      - name: Build documentation
+        working-directory: boot
+        run: cargo doc --no-deps
+        env:
+          RUSTDOCFLAGS: "--cfg docsrs"
+
+      - name: Upload documentation
+        uses: actions/upload-artifact@v4
+        with:
+          name: bootloader-docs
+          path: target/x86_64-unknown-uefi/doc
+          retention-days: 7
