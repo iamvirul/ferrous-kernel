@@ -1,0 +1,23 @@
+[package]
+name = "ferrous-boot"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "UEFI bootloader for Ferrous Kernel"
+
+[[bin]]
+name = "ferrous-boot"
+path = "src/main.rs"
+
+[dependencies]
+uefi = { version = "0.32", features = ["alloc", "logger"] }
+log = { version = "0.4", default-features = false }
+
+[lints]
+workspace = true
+
+[lints.rust]
+# Boot code requires unsafe for UEFI interface - override workspace default
+unsafe_code = "warn"

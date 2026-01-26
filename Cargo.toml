@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "boot",
     "kernel",
     "lib/core",
     "lib/alloc",
