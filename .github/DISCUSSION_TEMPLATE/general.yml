@@ -1,0 +1,14 @@
+title: "[General]: "
+labels: ["general"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This is a place for general discussions that don't fit into other categories.
+  - type: textarea
+    id: discussion
+    attributes:
+      label: Discussion Topic
+      description: What would you like to discuss?
+    validations:
+      required: true

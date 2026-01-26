@@ -1,0 +1,21 @@
+title: "[Question]: "
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for your interest in the project and for taking the time to ask a question!
+  - type: textarea
+    id: question
+    attributes:
+      label: What is your question?
+      description: Please describe your question in detail.
+      placeholder: I am trying to do X, but I am not sure how to approach it...
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Provide any context regarding your question.
+      placeholder: I am using version X.Y.Z...
