@@ -14,8 +14,8 @@ mod console;
 mod memory;
 
 use core::fmt::Write;
-use uefi::prelude::*;
 use uefi::boot::MemoryType;
+use uefi::prelude::*;
 
 use crate::boot_info::BootInfo;
 use crate::console::Console;
@@ -132,11 +132,25 @@ fn efi_main() -> Status {
     log::info!("Total memory: {} MB", boot_info.total_memory_mb());
     log::info!("Usable memory: {} MB", boot_info.usable_memory_mb());
 
-    writeln!(console, "[INFO] Total memory: {} MB", boot_info.total_memory_mb()).unwrap();
-    writeln!(console, "[INFO] Usable memory: {} MB", boot_info.usable_memory_mb()).unwrap();
+    writeln!(
+        console,
+        "[INFO] Total memory: {} MB",
+        boot_info.total_memory_mb()
+    )
+    .unwrap();
+    writeln!(
+        console,
+        "[INFO] Usable memory: {} MB",
+        boot_info.usable_memory_mb()
+    )
+    .unwrap();
     writeln!(console, "").unwrap();
     writeln!(console, "Boot loader ready for kernel handoff.").unwrap();
-    writeln!(console, "(Kernel loading will be implemented in next phase)").unwrap();
+    writeln!(
+        console,
+        "(Kernel loading will be implemented in next phase)"
+    )
+    .unwrap();
 
     log::info!("Bootloader complete - halting");
 
