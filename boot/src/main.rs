@@ -196,7 +196,12 @@ fn efi_main() -> Status {
         core::ptr::write(core::ptr::addr_of_mut!(KERNEL_BOOT_INFO), kernel_boot_info);
     }
 
-    writeln!(console, "[OK] KernelBootInfo populated (magic={:#x})", ferrous_boot_info::BOOT_INFO_MAGIC).unwrap();
+    writeln!(
+        console,
+        "[OK] KernelBootInfo populated (magic={:#x})",
+        ferrous_boot_info::BOOT_INFO_MAGIC
+    )
+    .unwrap();
 
     // --- Exit UEFI boot services — point of no return ---
     //

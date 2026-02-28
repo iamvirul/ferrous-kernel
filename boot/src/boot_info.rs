@@ -6,9 +6,7 @@
 //! defined in `ferrous-boot-info` that uses no heap allocation.
 
 use crate::memory::MemoryMap;
-use ferrous_boot_info::{
-    pixel_format, KernelBootInfo, KernelFramebuffer, KernelMemoryDescriptor,
-};
+use ferrous_boot_info::{pixel_format, KernelBootInfo, KernelFramebuffer, KernelMemoryDescriptor};
 
 /// Information passed from the bootloader to the kernel.
 ///
