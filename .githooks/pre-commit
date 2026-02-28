@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# Pre-commit hook for Ferrous Kernel
+#
+# Runs cargo fmt --check on every workspace crate that has staged changes.
+# If formatting is wrong, the commit is blocked and you are told which files
+# to fix (run `cargo fmt` to auto-fix them).
+#
+# Install (one-time, per clone):
+#   git config core.hooksPath .githooks
+
+set -euo pipefail
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+
+# Crates that have their own cargo workspace / build config.
+CRATES=("boot" "kernel" "lib/core" "lib/alloc" "lib/boot-info")
+
+# Only check crates that have at least one staged Rust file.
+staged_rs_files=$(git diff --cached --name-only --diff-filter=ACMR | grep '\.rs$' || true)
+
+if [[ -z "$staged_rs_files" ]]; then
+    exit 0
+fi
+
+failed=0
+
+for crate in "${CRATES[@]}"; do
+    # Check if any staged file belongs to this crate.
+    if echo "$staged_rs_files" | grep -q "^${crate}/"; then
+        echo -e "${YELLOW}[fmt]${NC} checking $crate..."
+        if ! cargo fmt --manifest-path "$REPO_ROOT/$crate/Cargo.toml" -- --check 2>&1; then
+            echo -e "${RED}[FAIL]${NC} $crate has formatting issues."
+            echo -e "       Run: ${YELLOW}cargo fmt --manifest-path $crate/Cargo.toml${NC}"
+            failed=1
+        else
+            echo -e "${GREEN}[OK]${NC}   $crate"
+        fi
+    fi
+done
+
+if [[ $failed -ne 0 ]]; then
+    echo ""
+    echo -e "${RED}Pre-commit check failed.${NC} Fix formatting and re-stage:"
+    echo -e "  ${YELLOW}cargo fmt${NC}   (from the crate directory)"
+    echo -e "  ${YELLOW}git add -u${NC}  (re-stage the formatted files)"
+    exit 1
+fi
+
+echo -e "${GREEN}Pre-commit checks passed.${NC}"
+exit 0
