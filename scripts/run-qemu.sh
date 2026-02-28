@@ -123,8 +123,13 @@ run_qemu() {
 
     BOOT_DISK="$PROJECT_ROOT/target/boot-disk"
 
+    KVM_FLAG=""
+    if [[ -w /dev/kvm ]]; then
+        KVM_FLAG="-enable-kvm"
+    fi
+
     qemu-system-x86_64 \
-        -enable-kvm 2>/dev/null || true \
+        $KVM_FLAG \
         -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
         -drive format=raw,file=fat:rw:"$BOOT_DISK" \
         -m 256M \
