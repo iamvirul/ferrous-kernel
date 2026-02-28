@@ -82,9 +82,7 @@ ADRs have the following statuses:
 
 | Number | Title | Status | Date |
 |--------|-------|--------|------|
-| ADR-XXXX | [Title] | [Status] | YYYY-MM-DD |
-
-*(ADRs will be listed here as they are created)*
+| ADR-0001 | [Kernel Entry Point Handoff and UEFI Boot Services Exit Strategy](ADR-0001-kernel-entry-point-handoff.md) | Proposed | 2026-03-01 |
 
 ---
 
