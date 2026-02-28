@@ -13,8 +13,13 @@ path = "src/main.rs"
 [dependencies]
 ferrous-core = { path = "../lib/core" }
 ferrous-alloc = { path = "../lib/alloc", optional = true }
+ferrous-boot-info = { path = "../lib/boot-info" }
 
 [features]
 default = []
 alloc = ["ferrous-alloc"]
+
+[lints.rust]
+unsafe_code = "warn"
+warnings = "warn"
 

@@ -1,10 +1,14 @@
 //! Boot information structure.
 //!
-//! This module defines the `BootInfo` structure that is passed from the
-//! bootloader to the kernel. It contains all the information gathered
-//! during the boot process that the kernel needs to initialize.
+//! This module defines the `BootInfo` structure used internally by the
+//! bootloader to collect UEFI data. Before handing off to the kernel,
+//! this is converted to `KernelBootInfo` — the `#[repr(C)]` ABI struct
+//! defined in `ferrous-boot-info` that uses no heap allocation.
 
 use crate::memory::MemoryMap;
+use ferrous_boot_info::{
+    pixel_format, KernelBootInfo, KernelFramebuffer, KernelMemoryDescriptor,
+};
 
 /// Information passed from the bootloader to the kernel.
 ///
@@ -171,5 +175,80 @@ impl PixelFormat {
 impl Default for PixelFormat {
     fn default() -> Self {
         PixelFormat::Unknown
+    }
+}
+
+impl BootInfo {
+    /// Converts this heap-based `BootInfo` into a `KernelBootInfo`.
+    ///
+    /// The returned struct uses only fixed-size arrays and is safe to pass
+    /// to the kernel after `exit_boot_services()` when the UEFI allocator
+    /// is no longer available.
+    pub fn to_kernel_boot_info(&self) -> KernelBootInfo {
+        let mut kbi = KernelBootInfo::new();
+
+        // Copy memory map descriptors into the fixed-size array.
+        let mut count = 0;
+        for region in self.memory_map.regions() {
+            if count >= ferrous_boot_info::MAX_MEMORY_DESCRIPTORS {
+                kbi.memory_map.truncated = true;
+                break;
+            }
+            kbi.memory_map.descriptors[count] = KernelMemoryDescriptor {
+                ty: memory_region_type_to_uefi_u32(&region.region_type),
+                _pad: 0,
+                phys_start: region.start,
+                page_count: region.size / 4096,
+                attribute: region.attributes,
+            };
+            count += 1;
+        }
+        kbi.memory_map.count = count;
+
+        // Copy ACPI RSDP address.
+        kbi.acpi_rsdp = self.acpi_rsdp_address.unwrap_or(0);
+
+        // Copy framebuffer info if present.
+        if let Some(fb) = &self.framebuffer {
+            kbi.framebuffer = KernelFramebuffer {
+                base: fb.base_address,
+                size: fb.size(),
+                width: fb.width,
+                height: fb.height,
+                stride: fb.stride,
+                pixel_format: match fb.pixel_format {
+                    PixelFormat::Rgb => pixel_format::RGB,
+                    PixelFormat::Bgr => pixel_format::BGR,
+                    PixelFormat::Bitmask { .. } => pixel_format::BITMASK,
+                    PixelFormat::Unknown => pixel_format::UNKNOWN,
+                },
+            };
+            kbi.has_framebuffer = true;
+        }
+
+        kbi
+    }
+}
+
+/// Maps our `MemoryRegionType` back to the raw UEFI memory type u32.
+fn memory_region_type_to_uefi_u32(ty: &crate::memory::MemoryRegionType) -> u32 {
+    use crate::memory::MemoryRegionType::*;
+    use ferrous_boot_info::memory_type;
+    match ty {
+        Reserved => memory_type::RESERVED,
+        LoaderCode => memory_type::LOADER_CODE,
+        LoaderData => memory_type::LOADER_DATA,
+        BootServicesCode => memory_type::BOOT_SERVICES_CODE,
+        BootServicesData => memory_type::BOOT_SERVICES_DATA,
+        RuntimeServicesCode => memory_type::RUNTIME_SERVICES_CODE,
+        RuntimeServicesData => memory_type::RUNTIME_SERVICES_DATA,
+        Conventional | Usable => memory_type::CONVENTIONAL,
+        Unusable => memory_type::UNUSABLE,
+        AcpiReclaimable => memory_type::ACPI_RECLAIM,
+        AcpiNvs => memory_type::ACPI_NON_VOLATILE,
+        Mmio => memory_type::MMIO,
+        MmioPortSpace => memory_type::MMIO_PORT_SPACE,
+        Persistent => memory_type::PERSISTENT_MEMORY,
+        Unknown => memory_type::RESERVED,
     }
 }

@@ -13,6 +13,7 @@ members = [
     "kernel",
     "lib/core",
     "lib/alloc",
+    "lib/boot-info",
 ]
 resolver = "2"
 
