@@ -42,7 +42,7 @@ This is **not** a Linux replacement. It's a long-term research project exploring
 
 ## Current Status
 
-**Phase:** Foundation & Design (Phase 0)
+**Phase:** Phase 1 — Proof of Life (In Progress)
 **Target Architecture:** x86_64 (ARM64 planned)
 **Target Environment:** Server / Cloud / Research
 
@@ -161,11 +161,13 @@ See [SETUP.md](docs/SETUP.md) for complete setup and build instructions.
 
 ## Development Phases
 
-### Phase 0: Foundation & Design (Current)
-Establish structure, documentation, and development environment.
+### Phase 0: Foundation & Design — Complete
+Established structure, documentation, and development environment.
 
-### Phase 1: Proof of Life (Q2-Q3 2026)
+### Phase 1: Proof of Life (Q2-Q3 2026) — Current
 Boot via UEFI, basic memory management, serial output.
+- Task 1.1.1 (UEFI Bootloader): complete
+- Task 1.1.2 (Kernel Entry Point Handoff): complete — verified on QEMU
 
 ### Phase 2: Core Kernel (Q4 2026 - Q2 2027)
 Scheduler, IPC, capability system, first user-space program.
