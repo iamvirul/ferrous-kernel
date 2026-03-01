@@ -1,7 +1,7 @@
 # Ferrous Kernel - Development Roadmap
 
-**Last Updated:** 2026-01-04
-**Status:** Research & Foundation Phase
+**Last Updated:** 2026-03-01
+**Status:** Phase 1 — Proof of Life (In Progress)
 
 ---
 
@@ -10,7 +10,7 @@
 This roadmap outlines the development path for Ferrous, a next-generation operating system kernel written in Rust. This is a research-grade, long-term project focused on security, isolation, and modern workload support.
 
 **Project Duration Estimate:** Multi-year effort
-**Current Phase:** Phase 0 - Foundation & Design
+**Current Phase:** Phase 1 — Proof of Life
 
 ---
 
@@ -27,9 +27,11 @@ Every milestone must advance these core goals:
 
 ---
 
-## Phase 0: Foundation & Design (Q1 2026)
+## Phase 0: Foundation & Design — COMPLETE (Q1 2026)
 
 **Goal:** Establish project structure, design documents, and development infrastructure.
+
+**Completed:** 2026-01-04
 
 ### Deliverables
 
@@ -38,15 +40,16 @@ Every milestone must advance these core goals:
 - [x] Development environment setup guide
 - [x] Coding standards and unsafe Rust guidelines
 - [x] Architecture Decision Records (ADR) template
-- [x] Build system (cargo-based)
+- [x] Build system (cargo-based workspace)
 - [x] CI/CD pipeline skeleton
+- [x] Pre-commit formatting hook (`.githooks/pre-commit`)
 - [x] Initial design documents:
   - [x] Memory management architecture
   - [x] Capability system design
   - [x] IPC mechanism design
   - [x] Boot process overview
 
-### Success Criteria
+### Success Criteria — MET
 
 - Any contributor can clone, build, and understand the project structure
 - Core architectural decisions are documented with rationale
@@ -54,43 +57,67 @@ Every milestone must advance these core goals:
 
 ---
 
-## Phase 1: Proof of Life (Q2-Q3 2026)
+## Phase 1: Proof of Life — IN PROGRESS (Q2-Q3 2026)
 
 **Goal:** Boot into kernel space and establish basic runtime environment.
+
+**Started:** 2026-01-04
+
+### Architecture Decisions
+
+| ADR | Title | Status |
+|-----|-------|--------|
+| [ADR-0001](adr/ADR-0001-kernel-entry-point-handoff.md) | Kernel Entry Point Handoff and UEFI Boot Services Exit Strategy | Proposed |
 
 ### Milestones
 
 #### 1.1 - Bare Metal Boot
-- [ ] UEFI bootloader integration
-- [ ] Handoff to kernel entry point
-- [ ] Basic serial output (no formatting)
-- [ ] Verify execution on real hardware and QEMU
+
+| Task | Issue | Status |
+|------|-------|--------|
+| 1.1.1 UEFI Bootloader Integration | — | Complete (PR #15) |
+| 1.1.2 Kernel Entry Point Handoff | #3 | Complete (PR #56) |
+| 1.1.3 Basic Serial Output | #4 | Not Started |
+| 1.1.4 Verify Execution on QEMU and Hardware | #5 | Not Started |
+
+**Notes:**
+- `lib/boot-info` crate added — shared `#[repr(C)]` `KernelBootInfo` ABI between bootloader and kernel
+- UEFI boot services exit, bootstrap stack switch, and `kernel_entry` validated on QEMU (99 memory map entries, ACPI RSDP, framebuffer all passed through correctly)
 
 #### 1.2 - Runtime Setup
-- [ ] Set up kernel stack
-- [ ] Initialize GDT (Global Descriptor Table)
-- [ ] Configure IDT (Interrupt Descriptor Table)
-- [ ] Basic exception handlers (panic, page fault)
+
+| Task | Issue | Status |
+|------|-------|--------|
+| 1.2.1 Kernel Stack Setup | #6 | Not Started |
+| 1.2.2 GDT (Global Descriptor Table) Initialization | #7 | Not Started |
+| 1.2.3 IDT (Interrupt Descriptor Table) Configuration | #8 | Not Started |
+| 1.2.4 Basic Exception Handlers | #9 | Not Started |
 
 #### 1.3 - Memory Management Foundation
-- [ ] Parse UEFI memory map
-- [ ] Physical memory allocator (buddy/bitmap)
-- [ ] Virtual memory setup (identity mapping, higher-half kernel)
-- [ ] Page table management
-- [ ] Kernel heap allocator
+
+| Task | Issue | Status |
+|------|-------|--------|
+| 1.3.1 Parse UEFI Memory Map | #10 | Not Started |
+| 1.3.2 Physical Memory Allocator | #13 | Not Started |
+| 1.3.3 Virtual Memory Setup | #14 | Not Started |
+| 1.3.4 Page Table Management | #19 | Not Started |
+| 1.3.5 Kernel Heap Allocator | #20 | Not Started |
 
 #### 1.4 - Core Infrastructure
-- [ ] Logging framework (structured, level-based)
-- [ ] Panic handler with stack traces
-- [ ] Basic assertions and debug macros
-- [ ] Serial console driver
+
+| Task | Issue | Status |
+|------|-------|--------|
+| 1.4.1 Logging Framework | #21 | Not Started |
+| 1.4.2 Panic Handler with Stack Traces | #22 | Not Started |
+| 1.4.3 Basic Assertions and Debug Macros | #23 | Not Started |
+| 1.4.4 Serial Console Driver | #24 | Not Started |
 
 ### Success Criteria
 
-- Kernel boots on QEMU x86_64
-- Can print "Hello from Ferrous!" to serial console
-- Page fault handler catches and reports violations
-- Clean panic messages with source locations
+- [ ] Kernel boots on QEMU x86_64
+- [ ] Can print "Hello from Ferrous!" to serial console
+- [ ] Page fault handler catches and reports violations
+- [ ] Clean panic messages with source locations
 
 ---
 
