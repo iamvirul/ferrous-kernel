@@ -1,0 +1,12 @@
+[package]
+name = "ferrous-boot-info"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Shared boot information ABI between bootloader and kernel"
+
+[lints.rust]
+unsafe_code = "warn"
+warnings = "warn"

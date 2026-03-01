@@ -34,7 +34,14 @@ Before contributing, make sure you have:
    cd ferrous-kernel
    ```
 
-2. Review the project documentation:
+2. **Activate the pre-commit hook** (required, one-time per clone):
+   ```bash
+   git config core.hooksPath .githooks
+   ```
+   This runs `cargo fmt --check` on staged files before every commit so
+   formatting issues are caught locally instead of failing CI.
+
+3. Review the project documentation:
    - [CHARTER.md](CHARTER.md) - Project goals and design principles
    - [ARCHITECTURE.md](ARCHITECTURE.md) - System architecture
    - [ROADMAP.md](ROADMAP.md) - Development phases and milestones
@@ -119,8 +126,8 @@ Explain the what and why, not the how.
 
 - Run existing tests: `cargo test`
 - Run linters: `cargo clippy --all-targets -- -D warnings`
-- Check formatting: `cargo fmt --check`
-- Test in QEMU if applicable
+- Check formatting: `cargo fmt --check` (the pre-commit hook does this automatically)
+- Test in QEMU if applicable: `./scripts/run-qemu.sh`
 
 ### 7. Submit a Pull Request
 

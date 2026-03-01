@@ -133,8 +133,11 @@ See [SETUP.md](docs/SETUP.md) for detailed setup instructions.
 git clone https://github.com/iamvirul/ferrous-kernel.git
 cd ferrous-kernel
 
-# Build the kernel
-cargo build --release
+# Activate the pre-commit hook (one-time, required)
+git config core.hooksPath .githooks
+
+# Build the bootloader
+cd boot && cargo build && cd ..
 
 # Run in QEMU
 ./scripts/run-qemu.sh
@@ -192,6 +195,7 @@ Contributions are welcome! Ferrous Kernel is an open-source research project. We
 
 **Getting Started:**
 - Read [CONTRIBUTING.md](docs/CONTRIBUTING.md) for detailed guidelines
+- Run `git config core.hooksPath .githooks` after cloning to enable the pre-commit formatter check
 - Check [open issues](https://github.com/iamvirul/ferrous-kernel/issues) for tasks
 - Review the [ROADMAP.md](docs/ROADMAP.md) for current phase work
 - Join discussions and share ideas
