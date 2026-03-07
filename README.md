@@ -56,10 +56,11 @@ See [ROADMAP.md](docs/ROADMAP.md) for detailed development plan.
 ferrous-kernel/
 ├── docs/               # Documentation and design documents
 ├── kernel/             # Core kernel code
-│   ├── src/           # Platform-independent kernel code
-│   └── arch/          # Architecture-specific implementations
-│       ├── x86_64/    # x86-64 support
-│       └── aarch64/   # ARM64 support (future)
+│   └── src/
+│       ├── arch/      # Architecture-specific implementations
+│       │   └── x86_64/
+│       └── drivers/   # Hardware device drivers
+│           └── serial # 16550 UART driver (COM1)
 ├── drivers/           # Driver subsystems
 │   ├── block/        # Block device drivers
 │   ├── net/          # Network drivers
@@ -168,6 +169,7 @@ Established structure, documentation, and development environment.
 Boot via UEFI, basic memory management, serial output.
 - Task 1.1.1 (UEFI Bootloader): complete
 - Task 1.1.2 (Kernel Entry Point Handoff): complete — verified on QEMU
+- Task 1.1.3 (Basic Serial Output): complete — "Hello from Ferrous!" on serial console
 
 ### Phase 2: Core Kernel (Q4 2026 - Q2 2027)
 Scheduler, IPC, capability system, first user-space program.

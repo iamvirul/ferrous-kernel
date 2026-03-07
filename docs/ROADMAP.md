@@ -1,6 +1,6 @@
 # Ferrous Kernel - Development Roadmap
 
-**Last Updated:** 2026-03-01
+**Last Updated:** 2026-03-07
 **Status:** Phase 1 — Proof of Life (In Progress)
 
 ---
@@ -67,7 +67,7 @@ Every milestone must advance these core goals:
 
 | ADR | Title | Status |
 |-----|-------|--------|
-| [ADR-0001](adr/ADR-0001-kernel-entry-point-handoff.md) | Kernel Entry Point Handoff and UEFI Boot Services Exit Strategy | Proposed |
+| [ADR-0001](adr/ADR-0001-kernel-entry-point-handoff.md) | Kernel Entry Point Handoff and UEFI Boot Services Exit Strategy | Approved |
 
 ### Milestones
 
@@ -77,12 +77,13 @@ Every milestone must advance these core goals:
 |------|-------|--------|
 | 1.1.1 UEFI Bootloader Integration | — | Complete (PR #15) |
 | 1.1.2 Kernel Entry Point Handoff | #3 | Complete (PR #56) |
-| 1.1.3 Basic Serial Output | #4 | Not Started |
+| 1.1.3 Basic Serial Output | #4 | Complete (PR #58) |
 | 1.1.4 Verify Execution on QEMU and Hardware | #5 | Not Started |
 
 **Notes:**
 - `lib/boot-info` crate added — shared `#[repr(C)]` `KernelBootInfo` ABI between bootloader and kernel
 - UEFI boot services exit, bootstrap stack switch, and `kernel_entry` validated on QEMU (99 memory map entries, ACPI RSDP, framebuffer all passed through correctly)
+- `kernel/src/drivers/serial.rs` added — `SerialPort` struct with full 16550 UART init (115200 baud, 8N1); "Hello from Ferrous!" confirmed on QEMU serial console
 
 #### 1.2 - Runtime Setup
 
@@ -114,8 +115,8 @@ Every milestone must advance these core goals:
 
 ### Success Criteria
 
-- [ ] Kernel boots on QEMU x86_64
-- [ ] Can print "Hello from Ferrous!" to serial console
+- [x] Kernel boots on QEMU x86_64
+- [x] Can print "Hello from Ferrous!" to serial console
 - [ ] Page fault handler catches and reports violations
 - [ ] Clean panic messages with source locations
 
