@@ -35,6 +35,10 @@ use ferrous_boot_info::KernelBootInfo;
 // ---------------------------------------------------------------------------
 
 /// Size of the kernel bootstrap stack in bytes (16 KiB).
+///
+/// This stack is used only during the UEFI handoff sequence
+/// (exit_boot_services → kernel_entry). It is intentionally small —
+/// `kernel_main` immediately switches to the larger KERNEL_STACK.
 const BOOTSTRAP_STACK_SIZE: usize = 16 * 1024;
 
 /// Bootstrap stack used after `exit_boot_services()`.
@@ -48,6 +52,40 @@ struct BootstrapStack([u8; BOOTSTRAP_STACK_SIZE]);
 /// on the bootstrap stack runs. After that it is read-only (the stack grows
 /// into it, but that is managed by the CPU, not by Rust references).
 static mut BOOTSTRAP_STACK: BootstrapStack = BootstrapStack([0u8; BOOTSTRAP_STACK_SIZE]);
+
+// ---------------------------------------------------------------------------
+// Kernel primary stack
+// ---------------------------------------------------------------------------
+
+/// Total size of the kernel primary execution stack (64 KiB).
+///
+/// Layout:
+///   [bottom .. bottom+4KiB]  soft guard region — zeroed; future: non-present page
+///   [bottom+4KiB .. top]     60 KiB usable stack depth
+///
+/// When the kernel becomes a separate ELF binary this constant and the static
+/// below move to `kernel/src/arch/x86_64/stack.rs`, which also exports the
+/// `KernelStack<N>` type for use with a linker script.
+const KERNEL_STACK_SIZE: usize = 64 * 1024;
+
+/// Soft guard region at the bottom of the kernel stack (one 4 KiB page).
+///
+/// Not enforced until page-table management is implemented (Task 1.3.3).
+const KERNEL_STACK_GUARD_SIZE: usize = 4 * 1024;
+
+/// The kernel's primary execution stack.
+///
+/// `kernel_main` switches RSP to the top of this buffer immediately on entry,
+/// leaving the bootstrap stack behind. The stack is 16-byte aligned and large
+/// enough for typical kernel call chains in Phase 1 (no deep recursion, no
+/// interrupt frames yet).
+///
+/// SAFETY: switched to exactly once from `kernel_main` before any other
+/// stack writes occur. Single-core, interrupts-disabled environment.
+#[repr(C, align(16))]
+struct KernelStack([u8; KERNEL_STACK_SIZE]);
+
+static mut KERNEL_STACK: KernelStack = KernelStack([0u8; KERNEL_STACK_SIZE]);
 
 // ---------------------------------------------------------------------------
 // KernelBootInfo static
@@ -303,24 +341,89 @@ extern "C" fn kernel_entry(boot_info: *const KernelBootInfo) -> ! {
 
 /// First Rust function executing in the kernel context.
 ///
+/// On entry RSP points to the bootstrap stack (set up by the bootloader).
+/// The very first action is to switch to the kernel's own primary stack
+/// (`KERNEL_STACK`, 64 KiB) so we have adequate depth for kernel execution.
+///
 /// At this point:
 /// - Boot services have exited.
-/// - BSS has been zeroed.
 /// - We are on the bootstrap stack with interrupts disabled.
-/// - The permanent kernel stack has not been set up yet (Task 1.2.1).
-///
-/// Serial output here uses the minimal boot-side helpers. The full
-/// `SerialPort` driver lives in `kernel/src/drivers/serial.rs` and will be
-/// used from the kernel's own entry point once it becomes a separate binary.
+/// - `boot_info` is a reference into the `KERNEL_BOOT_INFO` static — valid
+///   for the lifetime of the kernel.
 fn kernel_main(boot_info: &KernelBootInfo) -> ! {
-    // Re-initialise the UART so the kernel owns its serial configuration
-    // from this point forward, independent of whatever UEFI left behind.
-    // This mirrors what `SerialPort::init()` does in kernel/src/drivers/serial.rs.
+    // -----------------------------------------------------------------------
+    // Step 1: Switch to the kernel primary stack.
+    //
+    // We leave the bootstrap stack behind. From this point forward RSP
+    // points into KERNEL_STACK.
+    //
+    // Implementation note — register spilling:
+    //
+    // After `mov rsp`, the compiler's RSP-relative loads for any locals
+    // computed before the switch would read from the zeroed kernel stack
+    // rather than the bootstrap stack, producing garbage values. We avoid
+    // this by using an `inlateout` constraint to keep `boot_info` in a
+    // physical register throughout the switch; the register is not modified
+    // by the asm, so `info_out == info_in` after. Stack bounds are computed
+    // fresh from the static address AFTER the switch — accessed by absolute
+    // address, never RSP-relative.
+    //
+    // SAFETY:
+    // - KERNEL_STACK is a valid 64 KiB, 16-byte-aligned static buffer.
+    // - stack_top is one past the end of the array — the correct initial RSP
+    //   for a downward-growing x86-64 stack.
+    // - boot_info points to KERNEL_BOOT_INFO, a valid static that outlives
+    //   the kernel. Reconstructing the reference after the switch is safe.
+    // - kernel_main is `-> !`; the return address on the bootstrap stack is
+    //   never consumed.
+    // - Interrupts are disabled; no context switch can race this.
+    // Switch RSP to the kernel stack. After this instruction the bootstrap
+    // stack is abandoned. We must not read any local variables that the
+    // compiler might have spilled to the old stack after this point.
+    //
+    // Solution: use only static-address loads after the switch.
+    // - KERNEL_STACK and KERNEL_BOOT_INFO are statics; their addresses are
+    //   embedded as absolute values in the code, never RSP-relative.
+    // - We ignore the `boot_info` parameter and re-derive it from
+    //   KERNEL_BOOT_INFO directly after the switch.
+    unsafe {
+        let stack_top = (core::ptr::addr_of!(KERNEL_STACK) as usize + KERNEL_STACK_SIZE) as u64;
+        core::arch::asm!(
+            "mov rsp, {top}",
+            top = in(reg) stack_top,
+            options(nomem, nostack, preserves_flags),
+        );
+    }
+
+    // Re-derive boot_info from the static — absolute address, never spilled.
+    // SAFETY: KERNEL_BOOT_INFO is fully populated before exit_boot_services()
+    // and is immutable from this point forward.
+    let boot_info = unsafe { &*core::ptr::addr_of!(KERNEL_BOOT_INFO) };
+
+    // Stack bounds computed from static address, not RSP-relative.
+    let stack_bottom = unsafe { core::ptr::addr_of!(KERNEL_STACK) as usize };
+    let stack_top = stack_bottom + KERNEL_STACK_SIZE;
+
+    // -----------------------------------------------------------------------
+    // Step 2: UART init — kernel now owns COM1 configuration.
     serial_init();
 
     serial_write_str("\r\n");
     serial_write_str("=== Ferrous Kernel ===\r\n");
     serial_write_str("[OK] kernel_entry: BootInfo validated\r\n");
+    serial_write_str("[OK] Kernel stack active\r\n");
+
+    // Print stack bounds so we can verify the switch worked.
+    serial_write_str("[INFO] Kernel stack: 0x");
+    serial_write_usize_hex(stack_bottom);
+    serial_write_str(" - 0x");
+    serial_write_usize_hex(stack_top);
+    serial_write_str(" (");
+    serial_write_usize(KERNEL_STACK_SIZE / 1024);
+    serial_write_str(" KiB, guard=");
+    serial_write_usize(KERNEL_STACK_GUARD_SIZE / 1024);
+    serial_write_str(" KiB)\r\n");
+
     serial_write_str("[OK] Kernel entered successfully!\r\n");
     serial_write_str("Hello from Ferrous!\r\n");
     serial_write_str("\r\n");
@@ -338,7 +441,7 @@ fn kernel_main(boot_info: &KernelBootInfo) -> ! {
         serial_write_str("[INFO] Framebuffer present\r\n");
     }
 
-    serial_write_str("\r\nKernel halting. Phase 1.2 (runtime setup) not yet implemented.\r\n");
+    serial_write_str("\r\nKernel halting. Phase 1.2.2 (GDT) not yet implemented.\r\n");
 
     halt()
 }
@@ -430,6 +533,26 @@ fn serial_write_usize(mut n: usize) {
     while n > 0 {
         buf[i] = b'0' + (n % 10) as u8;
         n /= 10;
+        i += 1;
+    }
+    for j in (0..i).rev() {
+        // SAFETY: see `serial_write_byte`.
+        unsafe { serial_write_byte(buf[j]) };
+    }
+}
+
+fn serial_write_usize_hex(n: usize) {
+    const HEX: &[u8] = b"0123456789abcdef";
+    let mut buf = [0u8; 16];
+    let mut i = 0;
+    let mut val = n;
+    if val == 0 {
+        serial_write_str("0");
+        return;
+    }
+    while val > 0 {
+        buf[i] = HEX[val & 0xf];
+        val >>= 4;
         i += 1;
     }
     for j in (0..i).rev() {
