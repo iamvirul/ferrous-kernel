@@ -78,12 +78,13 @@ Every milestone must advance these core goals:
 | 1.1.1 UEFI Bootloader Integration | — | Complete (PR #15) |
 | 1.1.2 Kernel Entry Point Handoff | #3 | Complete (PR #56) |
 | 1.1.3 Basic Serial Output | #4 | Complete (PR #58) |
-| 1.1.4 Verify Execution on QEMU and Hardware | #5 | Not Started |
+| 1.1.4 Verify Execution on QEMU and Hardware | #5 | Complete (PR #59) |
 
 **Notes:**
 - `lib/boot-info` crate added — shared `#[repr(C)]` `KernelBootInfo` ABI between bootloader and kernel
 - UEFI boot services exit, bootstrap stack switch, and `kernel_entry` validated on QEMU (99 memory map entries, ACPI RSDP, framebuffer all passed through correctly)
 - `kernel/src/drivers/serial.rs` added — `SerialPort` struct with full 16550 UART init (115200 baud, 8N1); "Hello from Ferrous!" confirmed on QEMU serial console
+- `scripts/verify-boot.sh` added — automated boot verification for CI; `docs/QEMU_TESTING.md` documents expected output and troubleshooting
 
 #### 1.2 - Runtime Setup
 
