@@ -1,8 +1,8 @@
 # Development Environment Setup Guide
 
-**Version:** 0.1  
-**Date:** 2026-01-04  
-**Status:** Phase 0
+**Version:** 0.2
+**Date:** 2026-03-07
+**Status:** Phase 1 (Proof of Life)
 
 ---
 
@@ -87,18 +87,37 @@ cd ferrous-kernel
 git branch
 ```
 
-### 3. Verify Build System
+### 3. Install Rust targets and components
 
 ```bash
-# Check that Cargo workspace is set up correctly
-cargo check --workspace
+# Add the UEFI target (for the bootloader)
+rustup target add x86_64-unknown-uefi
 
-# If this succeeds, the build system is configured correctly
+# Add the bare-metal target (for the kernel)
+rustup target add x86_64-unknown-none
 ```
 
-**Note:** The build system is in Phase 0 and may not compile yet. This is expected. The workspace structure should be valid.
+### 4. Activate the pre-commit hook
 
-### 4. Install Additional Rust Tools
+```bash
+# Run once after cloning — enforces cargo fmt before every commit
+git config core.hooksPath .githooks
+```
+
+### 5. Build and run
+
+```bash
+# Build the bootloader
+cd boot && cargo build && cd ..
+
+# Run in QEMU (builds automatically)
+./scripts/run-qemu.sh
+
+# Verify boot output programmatically
+./scripts/verify-boot.sh
+```
+
+### 6. Install Additional Rust Tools
 
 ```bash
 # Install rustfmt (code formatting)
@@ -112,7 +131,7 @@ cargo fmt --version
 cargo clippy --version
 ```
 
-### 5. Verify QEMU Installation
+### 7. Verify QEMU Installation
 
 ```bash
 # Check QEMU version
@@ -199,7 +218,7 @@ cargo fmt --version
 cargo clippy --version
 ```
 
-All commands should execute without errors (though `cargo check` may show compilation errors since code isn't implemented yet).
+All commands should execute without errors.
 
 ---
 
@@ -320,6 +339,8 @@ rustc --version
 - On macOS: `brew upgrade qemu`
 - On Linux: Update via package manager
 
+For detailed QEMU troubleshooting and expected output, see [QEMU_TESTING.md](QEMU_TESTING.md).
+
 ### Build System Issues
 
 **Problem:** `cargo check` fails with workspace errors
@@ -342,11 +363,13 @@ rustc --version
 
 Once your environment is set up:
 
-1. Read the [CONTRIBUTING.md](CONTRIBUTING.md) guide
-2. Review the [ARCHITECTURE.md](ARCHITECTURE.md) documents
-3. Check [ROADMAP.md](ROADMAP.md) for current phase work
-4. Look for `good-first-issue` labels in GitHub issues
-5. Start contributing!
+1. Run `./scripts/run-qemu.sh` — you should see "Hello from Ferrous!" on the serial console
+2. Run `./scripts/verify-boot.sh` — automated pass/fail check
+3. Read the [CONTRIBUTING.md](CONTRIBUTING.md) guide
+4. Review the [ARCHITECTURE.md](ARCHITECTURE.md) documents
+5. Check [ROADMAP.md](ROADMAP.md) for current phase work
+6. Read [QEMU_TESTING.md](QEMU_TESTING.md) for full testing and troubleshooting guide
+7. Look for open issues in GitHub for tasks to pick up
 
 ---
 
