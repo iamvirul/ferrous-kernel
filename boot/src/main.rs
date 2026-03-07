@@ -308,12 +308,21 @@ extern "C" fn kernel_entry(boot_info: *const KernelBootInfo) -> ! {
 /// - BSS has been zeroed.
 /// - We are on the bootstrap stack with interrupts disabled.
 /// - The permanent kernel stack has not been set up yet (Task 1.2.1).
+///
+/// Serial output here uses the minimal boot-side helpers. The full
+/// `SerialPort` driver lives in `kernel/src/drivers/serial.rs` and will be
+/// used from the kernel's own entry point once it becomes a separate binary.
 fn kernel_main(boot_info: &KernelBootInfo) -> ! {
+    // Re-initialise the UART so the kernel owns its serial configuration
+    // from this point forward, independent of whatever UEFI left behind.
+    // This mirrors what `SerialPort::init()` does in kernel/src/drivers/serial.rs.
+    serial_init();
+
     serial_write_str("\r\n");
     serial_write_str("=== Ferrous Kernel ===\r\n");
     serial_write_str("[OK] kernel_entry: BootInfo validated\r\n");
-    serial_write_str("[OK] kernel_main: BSS zeroed\r\n");
     serial_write_str("[OK] Kernel entered successfully!\r\n");
+    serial_write_str("Hello from Ferrous!\r\n");
     serial_write_str("\r\n");
 
     // Report memory map summary via serial.
@@ -338,9 +347,45 @@ fn kernel_main(boot_info: &KernelBootInfo) -> ! {
 // Minimal serial output (COM1, 0x3F8)
 //
 // UEFI console is gone after exit_boot_services(). We write directly to
-// the 16550-compatible UART at I/O port 0x3F8 (COM1, 115200 8N1 assumed
-// already configured by UEFI/firmware). Full serial driver: Task 1.1.3.
+// the 16550-compatible UART at I/O port 0x3F8 (COM1, 115200 8N1).
+//
+// The full, reusable serial driver lives in kernel/src/drivers/serial.rs.
+// These boot-side helpers are a lightweight duplicate kept here so the
+// bootloader has zero dependencies on the kernel crate.
 // ---------------------------------------------------------------------------
+
+/// Initialise the UART to 115200 baud, 8N1.
+///
+/// Mirrors `SerialPort::init()` in `kernel/src/drivers/serial.rs`.
+/// Called once at the top of `kernel_main` so the kernel owns the UART
+/// configuration from this point forward.
+/// Write `value` to I/O port `port`.
+///
+/// # Safety
+///
+/// Caller must be at CPL=0. `port` must be a valid I/O address for the
+/// device being configured.
+unsafe fn outb(port: u16, value: u8) {
+    core::arch::asm!(
+        "out dx, al",
+        in("dx") port,
+        in("al") value,
+        options(nomem, nostack, preserves_flags),
+    );
+}
+
+fn serial_init() {
+    // SAFETY: we are at CPL=0 and no other code touches COM1 at this stage.
+    unsafe {
+        outb(0x3F8 + 1, 0x00); // disable interrupts
+        outb(0x3F8 + 3, 0x80); // enable DLAB
+        outb(0x3F8, 0x01); // divisor low byte (115200 baud)
+        outb(0x3F8 + 1, 0x00); // divisor high byte
+        outb(0x3F8 + 3, 0x03); // 8N1, clear DLAB
+        outb(0x3F8 + 2, 0xC7); // enable + flush FIFOs
+        outb(0x3F8 + 4, 0x0B); // DTR + RTS + AUX2
+    }
+}
 
 /// Write a byte to COM1 (I/O port 0x3F8), polling until the THR is empty.
 ///
