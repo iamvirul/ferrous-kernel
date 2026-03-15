@@ -54,7 +54,10 @@ const KERNEL_DATA_SEL: u16 = 0x0010;
 
 #[test]
 fn gdt_null_descriptor_is_zero() {
-    assert_eq!(NULL_DESC, 0, "null descriptor must be all-zero (SDM requirement)");
+    assert_eq!(
+        NULL_DESC, 0,
+        "null descriptor must be all-zero (SDM requirement)"
+    );
 }
 
 #[test]
@@ -88,7 +91,11 @@ fn gdt_kernel_code_executable_bit() {
 #[test]
 fn gdt_kernel_code_long_mode_bit() {
     // Bit 53 = L. Must be 1 to enable 64-bit execution mode.
-    assert_ne!(KERNEL_CODE_DESC & (1 << 53), 0, "L bit must be 1 for 64-bit code");
+    assert_ne!(
+        KERNEL_CODE_DESC & (1 << 53),
+        0,
+        "L bit must be 1 for 64-bit code"
+    );
 }
 
 #[test]
@@ -124,7 +131,11 @@ fn gdt_kernel_data_dpl_is_ring0() {
 #[test]
 fn gdt_kernel_data_is_not_executable() {
     // Bit 43 = Executable. Must be 0 for a data segment.
-    assert_eq!(KERNEL_DATA_DESC & (1 << 43), 0, "data segment must not be executable");
+    assert_eq!(
+        KERNEL_DATA_DESC & (1 << 43),
+        0,
+        "data segment must not be executable"
+    );
 }
 
 #[test]
@@ -188,8 +199,7 @@ fn idt_entry_address_round_trips() {
     // Reconstruct the original address from its three parts.
     let addr: u64 = 0xFFFF_8000_1234_5678;
     let (low, mid, high) = idt_entry_parts(addr);
-    let reconstructed =
-        (low as u64) | ((mid as u64) << 16) | ((high as u64) << 32);
+    let reconstructed = (low as u64) | ((mid as u64) << 16) | ((high as u64) << 32);
     assert_eq!(reconstructed, addr);
 }
 
@@ -216,7 +226,11 @@ fn idt_attr_kernel_interrupt_gate_value() {
     const ATTR_KERNEL_INTERRUPT: u8 = 0x8E;
     assert_eq!(ATTR_KERNEL_INTERRUPT & 0x80, 0x80, "P bit must be set");
     assert_eq!((ATTR_KERNEL_INTERRUPT >> 5) & 0b11, 0, "DPL must be 0");
-    assert_eq!(ATTR_KERNEL_INTERRUPT & 0x0F, 0xE, "gate type must be 0xE (interrupt)");
+    assert_eq!(
+        ATTR_KERNEL_INTERRUPT & 0x0F,
+        0xE,
+        "gate type must be 0xE (interrupt)"
+    );
 }
 
 #[test]
@@ -262,21 +276,53 @@ fn has_error_code(vector: u64) -> bool {
 #[test]
 fn exception_vectors_with_error_code() {
     // Intel SDM Vol 3A Table 6-1
-    assert!(has_error_code(8), "#DF (double fault) pushes error code (always 0)");
-    assert!(has_error_code(10), "#TS (invalid TSS) pushes selector error code");
-    assert!(has_error_code(11), "#NP (segment not present) pushes error code");
-    assert!(has_error_code(12), "#SS (stack-segment fault) pushes error code");
-    assert!(has_error_code(13), "#GP (general protection) pushes error code");
-    assert!(has_error_code(14), "#PF (page fault) pushes error code + CR2");
-    assert!(has_error_code(17), "#AC (alignment check) pushes error code");
-    assert!(has_error_code(21), "#CP (control protection) pushes error code");
-    assert!(has_error_code(29), "#VC (VMM communication) pushes error code");
-    assert!(has_error_code(30), "#SX (security exception) pushes error code");
+    assert!(
+        has_error_code(8),
+        "#DF (double fault) pushes error code (always 0)"
+    );
+    assert!(
+        has_error_code(10),
+        "#TS (invalid TSS) pushes selector error code"
+    );
+    assert!(
+        has_error_code(11),
+        "#NP (segment not present) pushes error code"
+    );
+    assert!(
+        has_error_code(12),
+        "#SS (stack-segment fault) pushes error code"
+    );
+    assert!(
+        has_error_code(13),
+        "#GP (general protection) pushes error code"
+    );
+    assert!(
+        has_error_code(14),
+        "#PF (page fault) pushes error code + CR2"
+    );
+    assert!(
+        has_error_code(17),
+        "#AC (alignment check) pushes error code"
+    );
+    assert!(
+        has_error_code(21),
+        "#CP (control protection) pushes error code"
+    );
+    assert!(
+        has_error_code(29),
+        "#VC (VMM communication) pushes error code"
+    );
+    assert!(
+        has_error_code(30),
+        "#SX (security exception) pushes error code"
+    );
 }
 
 #[test]
 fn exception_vectors_without_error_code() {
-    let no_ec = [0u64, 1, 2, 3, 4, 5, 6, 7, 9, 15, 16, 18, 19, 20, 22, 23, 24, 25, 26, 27, 28, 31];
+    let no_ec = [
+        0u64, 1, 2, 3, 4, 5, 6, 7, 9, 15, 16, 18, 19, 20, 22, 23, 24, 25, 26, 27, 28, 31,
+    ];
     for v in no_ec {
         assert!(
             !has_error_code(v),
@@ -289,7 +335,10 @@ fn exception_vectors_without_error_code() {
 #[test]
 fn exactly_ten_vectors_push_error_codes() {
     let count = (0u64..32).filter(|&v| has_error_code(v)).count();
-    assert_eq!(count, 10, "exactly 10 exception vectors push error codes per Intel SDM");
+    assert_eq!(
+        count, 10,
+        "exactly 10 exception vectors push error codes per Intel SDM"
+    );
 }
 
 #[test]
