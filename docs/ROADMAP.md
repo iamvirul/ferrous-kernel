@@ -86,13 +86,14 @@ Every milestone must advance these core goals:
 - `kernel/src/drivers/serial.rs` added — `SerialPort` struct with full 16550 UART init (115200 baud, 8N1); "Hello from Ferrous!" confirmed on QEMU serial console
 - `scripts/verify-boot.sh` added — automated boot verification for CI; `docs/QEMU_TESTING.md` documents expected output and troubleshooting
 - `kernel/src/arch/x86_64/stack.rs` added — `KernelStack<N>` type with `top()`/`bottom()` and guard-region constants; 64 KiB primary stack active in `kernel_main`, bounds printed to serial
+- `kernel/src/arch/x86_64/gdt.rs` added — minimal 3-entry GDT (null, kernel-code 0x08, kernel-data 0x10); loaded via `LGDT`, CS reloaded via far-return (`RETFQ`), data segments reloaded; verified active in QEMU serial output
 
 #### 1.2 - Runtime Setup
 
 | Task | Issue | Status |
 |------|-------|--------|
 | 1.2.1 Kernel Stack Setup | #6 | Complete (PR #60) |
-| 1.2.2 GDT (Global Descriptor Table) Initialization | #7 | Not Started |
+| 1.2.2 GDT (Global Descriptor Table) Initialization | #7 | Complete (PR #61) |
 | 1.2.3 IDT (Interrupt Descriptor Table) Configuration | #8 | Not Started |
 | 1.2.4 Basic Exception Handlers | #9 | Not Started |
 

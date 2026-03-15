@@ -424,6 +424,22 @@ fn kernel_main(boot_info: &KernelBootInfo) -> ! {
     serial_write_usize(KERNEL_STACK_GUARD_SIZE / 1024);
     serial_write_str(" KiB)\r\n");
 
+    // -----------------------------------------------------------------------
+    // Step 3: Load GDT — set up kernel code/data segments.
+    //
+    // The UEFI firmware may have installed its own GDT, which is no longer
+    // mapped or valid after exit_boot_services().  We install a minimal GDT
+    // with exactly the segments needed for kernel operation.
+    //
+    // SAFETY:
+    // - We are at CPL=0 (ring 0) throughout the boot sequence.
+    // - Interrupts have been disabled since the `cli` in efi_main.
+    // - GDT is a valid static in permanently mapped memory.
+    unsafe { gdt_init() };
+
+    serial_write_str("[OK] GDT loaded (null / kernel-code 0x08 / kernel-data 0x10)\r\n");
+
+    // -----------------------------------------------------------------------
     serial_write_str("[OK] Kernel entered successfully!\r\n");
     serial_write_str("Hello from Ferrous!\r\n");
     serial_write_str("\r\n");
@@ -441,7 +457,7 @@ fn kernel_main(boot_info: &KernelBootInfo) -> ! {
         serial_write_str("[INFO] Framebuffer present\r\n");
     }
 
-    serial_write_str("\r\nKernel halting. Phase 1.2.2 (GDT) not yet implemented.\r\n");
+    serial_write_str("\r\nKernel halting. Phase 1.2.3 (IDT) not yet implemented.\r\n");
 
     halt()
 }
@@ -559,6 +575,116 @@ fn serial_write_usize_hex(n: usize) {
         // SAFETY: see `serial_write_byte`.
         unsafe { serial_write_byte(buf[j]) };
     }
+}
+
+// ---------------------------------------------------------------------------
+// GDT (Global Descriptor Table)
+//
+// Even in 64-bit long mode, the GDT must be present and loaded.  The CPU
+// uses the code-segment descriptor to confirm 64-bit execution mode (L=1)
+// and the data-segment selector to satisfy segment-register requirements.
+//
+// Minimal layout for Phase 1:
+//   Index 0 — 0x0000 : Null descriptor (architecturally required)
+//   Index 1 — 0x0008 : Kernel code segment (64-bit, ring 0)
+//   Index 2 — 0x0010 : Kernel data segment (ring 0)
+//
+// The canonical types live in kernel/src/arch/x86_64/gdt.rs.
+// This is the Phase-1 inline copy used while boot and kernel share a binary.
+// ---------------------------------------------------------------------------
+
+/// 64-bit kernel code segment: P=1, DPL=0, S=1, Type=0xA, L=1, D=0, G=1.
+const GDT_KERNEL_CODE: u64 = 0x00AF_9A00_0000_FFFF;
+
+/// Kernel data segment: P=1, DPL=0, S=1, Type=0x2, D=1, G=1.
+const GDT_KERNEL_DATA: u64 = 0x00CF_9200_0000_FFFF;
+
+/// Kernel code segment selector (GDT index 1, TI=0, RPL=0).
+const KERNEL_CODE_SELECTOR: u64 = 0x08;
+
+/// Kernel data segment selector (GDT index 2, TI=0, RPL=0).
+const KERNEL_DATA_SELECTOR: u16 = 0x10;
+
+/// The kernel's GDT — three entries, 8-byte aligned.
+#[repr(C, align(8))]
+struct Gdt([u64; 3]);
+
+/// SAFETY: written once at compile time and never mutated; the CPU reads it
+/// as raw bytes via the GDTR, which does not go through Rust's reference model.
+static GDT: Gdt = Gdt([0x0000_0000_0000_0000, GDT_KERNEL_CODE, GDT_KERNEL_DATA]);
+
+/// Pointer structure passed to the `LGDT` instruction.
+///
+/// Must be `#[repr(C, packed)]` so the CPU sees exactly 2 bytes of limit
+/// followed by 8 bytes of base — no padding.
+#[repr(C, packed)]
+struct GdtPointer {
+    limit: u16,
+    base: u64,
+}
+
+/// Load the GDT and reload all segment registers.
+///
+/// # Safety
+///
+/// - Must be called at CPL=0 with interrupts disabled.
+/// - `GDT` must be mapped and accessible at its linear address for the
+///   lifetime of the kernel.
+unsafe fn gdt_init() {
+    let ptr = GdtPointer {
+        limit: (core::mem::size_of::<Gdt>() - 1) as u16,
+        base: core::ptr::addr_of!(GDT) as u64,
+    };
+
+    // Load GDTR.
+    //
+    // SAFETY: `ptr` is a valid GdtPointer on the current stack; its address
+    // is stable for the duration of this inline-asm block. LGDT is a
+    // privileged instruction valid at CPL=0.
+    core::arch::asm!(
+        "lgdt [{ptr}]",
+        ptr = in(reg) &ptr,
+        options(readonly, nostack, preserves_flags),
+    );
+
+    // Reload CS via far return.
+    //
+    // There is no direct way to load CS in 64-bit mode; a far return is the
+    // standard technique.  Stack layout for RETFQ (grows downward):
+    //   RSP+0  new RIP  (address of label 1f, immediately after RETFQ)
+    //   RSP+8  new CS   (KERNEL_CODE_SELECTOR = 0x08)
+    //
+    // After RETFQ the CPU fetches the next instruction from label 2: with
+    // CS holding the kernel code selector.
+    //
+    // SAFETY: KERNEL_CODE_SELECTOR references a valid 64-bit code descriptor
+    // in GDT.  The far return lands on the very next instruction (label 1:),
+    // so control flow remains within this function.
+    core::arch::asm!(
+        "push {cs}",
+        "lea {tmp}, [rip + 2f]",
+        "push {tmp}",
+        "retfq",
+        "2:",
+        cs  = in(reg) KERNEL_CODE_SELECTOR,
+        tmp = lateout(reg) _,
+    );
+
+    // Reload data segment registers.
+    //
+    // DS, ES, FS, GS, SS must hold a valid selector; in 64-bit mode their
+    // base/limit are ignored, but a null or invalid selector causes a #GP.
+    //
+    // SAFETY: KERNEL_DATA_SELECTOR references a valid data descriptor.
+    core::arch::asm!(
+        "mov ds, ax",
+        "mov es, ax",
+        "mov fs, ax",
+        "mov gs, ax",
+        "mov ss, ax",
+        in("ax") KERNEL_DATA_SELECTOR,
+        options(nomem, nostack, preserves_flags),
+    );
 }
 
 /// Halt the CPU permanently.
