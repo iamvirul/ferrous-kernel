@@ -88,6 +88,7 @@ Every milestone must advance these core goals:
 - `kernel/src/arch/x86_64/stack.rs` added — `KernelStack<N>` type with `top()`/`bottom()` and guard-region constants; 64 KiB primary stack active in `kernel_main`, bounds printed to serial
 - `kernel/src/arch/x86_64/gdt.rs` added — minimal 3-entry GDT (null, kernel-code 0x08, kernel-data 0x10); loaded via `LGDT`, CS reloaded via far-return (`RETFQ`), data segments reloaded; verified active in QEMU serial output
 - `kernel/src/arch/x86_64/idt.rs` added — 256-entry IDT with `IdtEntry`, `IdtPointer`, `ExceptionFrame` types and `unsafe load()`; 32 exception stubs (vectors 0–31) + generic IRQ stub (32–255) via `global_asm!`; `LIDT` loaded, interrupts remain disabled; verified active in QEMU serial output
+- Exception stubs upgraded — two `global_asm!` macro variants: `isr_stub` (no error code: RDI=vector, RSI=0, RDX=frame ptr) and `isr_stub_ec` (error code popped into RSI, RDX=frame ptr); `exception_handler()` prints vector name, error code (for vectors 8,10–14,17,21,29,30), faulting RIP+RFLAGS+RSP from the CPU-pushed `ExceptionFrame`, and CR2 for #PF (vector 14); boot verification passes
 
 #### 1.2 - Runtime Setup
 
@@ -96,7 +97,7 @@ Every milestone must advance these core goals:
 | 1.2.1 Kernel Stack Setup | #6 | Complete (PR #60) |
 | 1.2.2 GDT (Global Descriptor Table) Initialization | #7 | Complete (PR #61) |
 | 1.2.3 IDT (Interrupt Descriptor Table) Configuration | #8 | Complete (PR #62) |
-| 1.2.4 Basic Exception Handlers | #9 | Not Started |
+| 1.2.4 Basic Exception Handlers | #9 | Complete (PR #63) |
 
 #### 1.3 - Memory Management Foundation
 
@@ -121,7 +122,7 @@ Every milestone must advance these core goals:
 
 - [x] Kernel boots on QEMU x86_64
 - [x] Can print "Hello from Ferrous!" to serial console
-- [ ] Page fault handler catches and reports violations
+- [x] Page fault handler catches and reports violations
 - [ ] Clean panic messages with source locations
 
 ---

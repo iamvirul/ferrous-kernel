@@ -215,3 +215,246 @@ impl KernelBootInfo {
         self.magic == BOOT_INFO_MAGIC && self.version == BOOT_INFO_VERSION
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+//
+// Even though this crate is #![no_std], cargo test links std for the test
+// binary. `extern crate std` makes it explicit so #[test] resolves correctly.
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+extern crate std;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -----------------------------------------------------------------------
+    // ABI constants
+    // -----------------------------------------------------------------------
+
+    /// Magic value must never change — it is embedded in the bootloader and
+    /// kernel independently. Any change breaks the boot ABI silently.
+    #[test]
+    fn boot_info_magic_is_stable() {
+        assert_eq!(BOOT_INFO_MAGIC, 0xFE220B00_CAFE0001);
+    }
+
+    #[test]
+    fn boot_info_version_is_one() {
+        assert_eq!(BOOT_INFO_VERSION, 1);
+    }
+
+    #[test]
+    fn max_memory_descriptors_fits_real_hardware() {
+        // OVMF produces ~40 entries; real hardware rarely exceeds 128.
+        // 256 must remain the upper bound so the struct fits in a static.
+        assert_eq!(MAX_MEMORY_DESCRIPTORS, 256);
+        assert!(MAX_MEMORY_DESCRIPTORS >= 128);
+    }
+
+    // -----------------------------------------------------------------------
+    // KernelBootInfo validity
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn new_boot_info_is_valid() {
+        let info = KernelBootInfo::new();
+        assert!(
+            info.is_valid(),
+            "KernelBootInfo::new() must produce a valid struct (magic + version set)"
+        );
+    }
+
+    #[test]
+    fn corrupt_magic_fails_validation() {
+        let mut info = KernelBootInfo::new();
+        info.magic = 0xDEAD_BEEF;
+        assert!(!info.is_valid(), "wrong magic must fail is_valid()");
+    }
+
+    #[test]
+    fn corrupt_version_fails_validation() {
+        let mut info = KernelBootInfo::new();
+        info.version = 0;
+        assert!(!info.is_valid(), "wrong version must fail is_valid()");
+    }
+
+    #[test]
+    fn zeroed_magic_fails_validation() {
+        let mut info = KernelBootInfo::new();
+        info.magic = 0;
+        assert!(!info.is_valid());
+    }
+
+    // -----------------------------------------------------------------------
+    // KernelBootInfo defaults
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn new_boot_info_has_no_acpi() {
+        let info = KernelBootInfo::new();
+        assert_eq!(info.acpi_rsdp, 0);
+    }
+
+    #[test]
+    fn new_boot_info_has_no_framebuffer() {
+        let info = KernelBootInfo::new();
+        assert!(!info.has_framebuffer);
+    }
+
+    #[test]
+    fn new_boot_info_has_empty_memory_map() {
+        let info = KernelBootInfo::new();
+        assert_eq!(info.memory_map.count, 0);
+        assert!(!info.memory_map.truncated);
+        assert_eq!(info.memory_map.entries().len(), 0);
+    }
+
+    #[test]
+    fn bootloader_name_is_ferrous_boot() {
+        let info = KernelBootInfo::new();
+        let name_bytes = &info.bootloader_name;
+        // Null-terminated ASCII: "ferrous-boot" followed by zeros.
+        assert_eq!(&name_bytes[..12], b"ferrous-boot");
+        assert_eq!(name_bytes[12], 0, "name must be null-terminated");
+    }
+
+    // -----------------------------------------------------------------------
+    // KernelMemoryDescriptor
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn memory_descriptor_size_bytes() {
+        let desc = KernelMemoryDescriptor {
+            ty: memory_type::CONVENTIONAL,
+            _pad: 0,
+            phys_start: 0x1000,
+            page_count: 16,
+            attribute: 0,
+        };
+        // 16 pages × 4096 bytes/page = 65536 bytes
+        assert_eq!(desc.size_bytes(), 16 * 4096);
+    }
+
+    #[test]
+    fn zero_pages_gives_zero_bytes() {
+        let desc = KernelMemoryDescriptor {
+            ty: memory_type::CONVENTIONAL,
+            _pad: 0,
+            phys_start: 0,
+            page_count: 0,
+            attribute: 0,
+        };
+        assert_eq!(desc.size_bytes(), 0);
+    }
+
+    #[test]
+    fn usable_memory_types() {
+        let usable = [
+            memory_type::CONVENTIONAL,
+            memory_type::BOOT_SERVICES_CODE,
+            memory_type::BOOT_SERVICES_DATA,
+            memory_type::LOADER_CODE,
+            memory_type::LOADER_DATA,
+            memory_type::ACPI_RECLAIM,
+        ];
+        for ty in usable {
+            let desc = KernelMemoryDescriptor {
+                ty,
+                _pad: 0,
+                phys_start: 0,
+                page_count: 1,
+                attribute: 0,
+            };
+            assert!(desc.is_usable(), "memory type {} should be usable", ty);
+        }
+    }
+
+    #[test]
+    fn reserved_memory_types_are_not_usable() {
+        let reserved = [
+            memory_type::RESERVED,
+            memory_type::RUNTIME_SERVICES_CODE,
+            memory_type::RUNTIME_SERVICES_DATA,
+            memory_type::ACPI_NON_VOLATILE,
+            memory_type::MMIO,
+            memory_type::MMIO_PORT_SPACE,
+            memory_type::UNUSABLE,
+        ];
+        for ty in reserved {
+            let desc = KernelMemoryDescriptor {
+                ty,
+                _pad: 0,
+                phys_start: 0,
+                page_count: 1,
+                attribute: 0,
+            };
+            assert!(!desc.is_usable(), "memory type {} should NOT be usable", ty);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // KernelMemoryMap
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn memory_map_entries_respects_count() {
+        let mut map = KernelMemoryMap::new();
+        map.count = 3;
+        assert_eq!(map.entries().len(), 3);
+    }
+
+    #[test]
+    fn memory_map_full_count_is_max() {
+        let mut map = KernelMemoryMap::new();
+        map.count = MAX_MEMORY_DESCRIPTORS;
+        assert_eq!(map.entries().len(), MAX_MEMORY_DESCRIPTORS);
+    }
+
+    // -----------------------------------------------------------------------
+    // KernelFramebuffer
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn zeroed_framebuffer_has_unknown_pixel_format() {
+        let fb = KernelFramebuffer::zeroed();
+        assert_eq!(fb.pixel_format, pixel_format::UNKNOWN);
+        assert_eq!(fb.base, 0);
+        assert_eq!(fb.width, 0);
+        assert_eq!(fb.height, 0);
+    }
+
+    #[test]
+    fn pixel_format_constants_are_distinct() {
+        assert_ne!(pixel_format::RGB, pixel_format::BGR);
+        assert_ne!(pixel_format::RGB, pixel_format::BITMASK);
+        assert_ne!(pixel_format::RGB, pixel_format::UNKNOWN);
+        assert_ne!(pixel_format::BGR, pixel_format::BITMASK);
+        assert_ne!(pixel_format::BGR, pixel_format::UNKNOWN);
+        assert_ne!(pixel_format::BITMASK, pixel_format::UNKNOWN);
+    }
+
+    // -----------------------------------------------------------------------
+    // Struct size stability (part of the boot ABI — changing these is a
+    // breaking change that requires a BOOT_INFO_VERSION bump)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn kernel_memory_descriptor_size() {
+        // 4 (ty) + 4 (_pad) + 8 (phys_start) + 8 (page_count) + 8 (attribute) = 32
+        assert_eq!(core::mem::size_of::<KernelMemoryDescriptor>(), 32);
+    }
+
+    #[test]
+    fn kernel_memory_descriptor_alignment() {
+        assert_eq!(core::mem::align_of::<KernelMemoryDescriptor>(), 8);
+    }
+
+    #[test]
+    fn kernel_framebuffer_size() {
+        // 8 (base) + 8 (size) + 4 (width) + 4 (height) + 4 (stride) + 4 (pixel_format) = 32
+        assert_eq!(core::mem::size_of::<KernelFramebuffer>(), 32);
+    }
+}
