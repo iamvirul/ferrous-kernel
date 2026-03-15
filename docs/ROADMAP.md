@@ -87,6 +87,7 @@ Every milestone must advance these core goals:
 - `scripts/verify-boot.sh` added — automated boot verification for CI; `docs/QEMU_TESTING.md` documents expected output and troubleshooting
 - `kernel/src/arch/x86_64/stack.rs` added — `KernelStack<N>` type with `top()`/`bottom()` and guard-region constants; 64 KiB primary stack active in `kernel_main`, bounds printed to serial
 - `kernel/src/arch/x86_64/gdt.rs` added — minimal 3-entry GDT (null, kernel-code 0x08, kernel-data 0x10); loaded via `LGDT`, CS reloaded via far-return (`RETFQ`), data segments reloaded; verified active in QEMU serial output
+- `kernel/src/arch/x86_64/idt.rs` added — 256-entry IDT with `IdtEntry`, `IdtPointer`, `ExceptionFrame` types and `unsafe load()`; 32 exception stubs (vectors 0–31) + generic IRQ stub (32–255) via `global_asm!`; `LIDT` loaded, interrupts remain disabled; verified active in QEMU serial output
 
 #### 1.2 - Runtime Setup
 
@@ -94,7 +95,7 @@ Every milestone must advance these core goals:
 |------|-------|--------|
 | 1.2.1 Kernel Stack Setup | #6 | Complete (PR #60) |
 | 1.2.2 GDT (Global Descriptor Table) Initialization | #7 | Complete (PR #61) |
-| 1.2.3 IDT (Interrupt Descriptor Table) Configuration | #8 | Not Started |
+| 1.2.3 IDT (Interrupt Descriptor Table) Configuration | #8 | Complete (PR #62) |
 | 1.2.4 Basic Exception Handlers | #9 | Not Started |
 
 #### 1.3 - Memory Management Foundation

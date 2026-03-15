@@ -440,6 +440,22 @@ fn kernel_main(boot_info: &KernelBootInfo) -> ! {
     serial_write_str("[OK] GDT loaded (null / kernel-code 0x08 / kernel-data 0x10)\r\n");
 
     // -----------------------------------------------------------------------
+    // Step 4: Load IDT — install exception stubs, load IDTR.
+    //
+    // After this call, any CPU exception (divide-by-zero, GPF, page fault,
+    // etc.) will be caught by our stub handlers instead of triple-faulting
+    // immediately. Interrupts remain disabled (no STI) — the IDT is ready
+    // for exceptions only at this stage.
+    //
+    // SAFETY:
+    // - We are at CPL=0.
+    // - Interrupts are disabled (cli executed in efi_main).
+    // - IDT static is fully initialised inside idt_init() before LIDT.
+    unsafe { idt_init() };
+
+    serial_write_str("[OK] IDT loaded (32 exception stubs, interrupts disabled)\r\n");
+
+    // -----------------------------------------------------------------------
     serial_write_str("[OK] Kernel entered successfully!\r\n");
     serial_write_str("Hello from Ferrous!\r\n");
     serial_write_str("\r\n");
@@ -457,7 +473,9 @@ fn kernel_main(boot_info: &KernelBootInfo) -> ! {
         serial_write_str("[INFO] Framebuffer present\r\n");
     }
 
-    serial_write_str("\r\nKernel halting. Phase 1.2.3 (IDT) not yet implemented.\r\n");
+    serial_write_str(
+        "\r\nKernel halting. Phase 1.2.4 (Exception Handlers) not yet implemented.\r\n",
+    );
 
     halt()
 }
@@ -684,6 +702,315 @@ unsafe fn gdt_init() {
         "mov ss, ax",
         in("ax") KERNEL_DATA_SELECTOR,
         options(nomem, nostack, preserves_flags),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// IDT (Interrupt Descriptor Table)
+//
+// The IDT maps interrupt/exception vectors 0–255 to handler stubs.
+// Each descriptor is 16 bytes. Phase 1 installs stub handlers for all
+// 32 CPU exception vectors plus a generic stub for IRQ vectors 32–255.
+// Interrupts remain DISABLED after init — this IDT is ready to catch
+// CPU exceptions (divide-by-zero, GPF, page faults, etc.) if they
+// arise from a kernel bug.
+//
+// The canonical types live in kernel/src/arch/x86_64/idt.rs.
+// This is the Phase-1 inline copy used while boot and kernel share a binary.
+//
+// Stub design (stable Rust — no abi_x86_interrupt / #[naked] required):
+//   global_asm! generates one tiny stub per vector:
+//     1. Put vector number in RDI (SysV first arg).
+//     2. Jump to __exception_common, which calls exception_halt().
+//   exception_halt() prints the vector name + number and halts forever.
+//   Since we never return, we don't need IRETQ or to balance the stack.
+// ---------------------------------------------------------------------------
+
+use core::arch::global_asm;
+
+// Assembly stubs — one per CPU exception vector (0–31) plus one generic
+// stub for hardware IRQ vectors (32–255).
+//
+// All stubs jump to __exception_common which calls exception_halt(vector).
+// Intel syntax is used (.intel_syntax noprefix) for consistency with the
+// inline asm elsewhere in this file.
+global_asm!(
+    ".intel_syntax noprefix",
+    // Common landing pad: RDI already contains the vector number.
+    // Calls exception_halt(vector: u64) which never returns.
+    ".global __exception_common",
+    "__exception_common:",
+    "cli",
+    "call exception_halt",
+    "ud2", // unreachable — silences assembler fall-through warnings
+    // Macro: one stub per vector — puts vector number in RDI, jumps to common.
+    ".macro isr_stub v",
+    ".global __isr_\\v",
+    "__isr_\\v:",
+    "mov rdi, \\v",
+    "jmp __exception_common",
+    ".endm",
+    // CPU exception stubs, vectors 0–31
+    "isr_stub 0",  // #DE  Divide Error
+    "isr_stub 1",  // #DB  Debug
+    "isr_stub 2",  // #NMI Non-Maskable Interrupt
+    "isr_stub 3",  // #BP  Breakpoint
+    "isr_stub 4",  // #OF  Overflow
+    "isr_stub 5",  // #BR  Bound Range Exceeded
+    "isr_stub 6",  // #UD  Invalid Opcode
+    "isr_stub 7",  // #NM  Device Not Available
+    "isr_stub 8",  // #DF  Double Fault         (error code = 0 always)
+    "isr_stub 9",  // (obsolete Coprocessor Segment Overrun)
+    "isr_stub 10", // #TS  Invalid TSS          (error code)
+    "isr_stub 11", // #NP  Segment Not Present  (error code)
+    "isr_stub 12", // #SS  Stack-Segment Fault  (error code)
+    "isr_stub 13", // #GP  General Protection   (error code)
+    "isr_stub 14", // #PF  Page Fault           (error code + CR2)
+    "isr_stub 15", // (reserved)
+    "isr_stub 16", // #MF  x87 FPU Error
+    "isr_stub 17", // #AC  Alignment Check      (error code)
+    "isr_stub 18", // #MC  Machine Check
+    "isr_stub 19", // #XF  SIMD FPU Exception
+    "isr_stub 20", // #VE  Virtualization Exception
+    "isr_stub 21", // #CP  Control Protection   (error code)
+    "isr_stub 22", // (reserved)
+    "isr_stub 23", // (reserved)
+    "isr_stub 24", // (reserved)
+    "isr_stub 25", // (reserved)
+    "isr_stub 26", // (reserved)
+    "isr_stub 27", // (reserved)
+    "isr_stub 28", // #HV  Hypervisor Injection
+    "isr_stub 29", // #VC  VMM Communication    (error code)
+    "isr_stub 30", // #SX  Security Exception   (error code)
+    "isr_stub 31", // (reserved)
+    // Generic stub for hardware IRQ vectors 32–255.
+    // Vector 255 is used as a sentinel; we never inspect it in Phase 1.
+    ".global __isr_irq",
+    "__isr_irq:",
+    "mov rdi, 255",
+    "jmp __exception_common",
+    ".att_syntax prefix", // restore assembler default
+);
+
+// Extern declarations for the stubs generated above.
+extern "C" {
+    fn __isr_0();
+    fn __isr_1();
+    fn __isr_2();
+    fn __isr_3();
+    fn __isr_4();
+    fn __isr_5();
+    fn __isr_6();
+    fn __isr_7();
+    fn __isr_8();
+    fn __isr_9();
+    fn __isr_10();
+    fn __isr_11();
+    fn __isr_12();
+    fn __isr_13();
+    fn __isr_14();
+    fn __isr_15();
+    fn __isr_16();
+    fn __isr_17();
+    fn __isr_18();
+    fn __isr_19();
+    fn __isr_20();
+    fn __isr_21();
+    fn __isr_22();
+    fn __isr_23();
+    fn __isr_24();
+    fn __isr_25();
+    fn __isr_26();
+    fn __isr_27();
+    fn __isr_28();
+    fn __isr_29();
+    fn __isr_30();
+    fn __isr_31();
+    fn __isr_irq();
+}
+
+/// Human-readable names for the 32 CPU exception vectors.
+static EXCEPTION_NAMES: [&str; 32] = [
+    "#DE: Divide Error",
+    "#DB: Debug",
+    "#NMI: Non-Maskable Interrupt",
+    "#BP: Breakpoint",
+    "#OF: Overflow",
+    "#BR: Bound Range Exceeded",
+    "#UD: Invalid Opcode",
+    "#NM: Device Not Available",
+    "#DF: Double Fault",
+    "(obsolete Coprocessor Segment Overrun)",
+    "#TS: Invalid TSS",
+    "#NP: Segment Not Present",
+    "#SS: Stack-Segment Fault",
+    "#GP: General Protection Fault",
+    "#PF: Page Fault",
+    "(reserved)",
+    "#MF: x87 FPU Floating-Point Error",
+    "#AC: Alignment Check",
+    "#MC: Machine Check",
+    "#XF: SIMD Floating-Point Exception",
+    "#VE: Virtualization Exception",
+    "#CP: Control Protection Exception",
+    "(reserved)",
+    "(reserved)",
+    "(reserved)",
+    "(reserved)",
+    "(reserved)",
+    "(reserved)",
+    "#HV: Hypervisor Injection Exception",
+    "#VC: VMM Communication Exception",
+    "#SX: Security Exception",
+    "(reserved)",
+];
+
+/// Common exception handler — never returns.
+///
+/// Called from all exception stubs with the vector number in `vector`.
+/// Writes the exception name to the serial console and halts the CPU.
+///
+/// # Safety (caller — the asm stubs)
+///
+/// Called from assembly with `vector` in RDI (SysV AMD64 first argument).
+/// The asm stubs execute `cli` before this call, so interrupts are disabled.
+/// This function must be `#[no_mangle]` so the assembler name matches.
+#[no_mangle]
+extern "C" fn exception_halt(vector: u64) -> ! {
+    serial_write_str("\r\n!!! EXCEPTION !!!\r\n");
+    if (vector as usize) < EXCEPTION_NAMES.len() {
+        serial_write_str(EXCEPTION_NAMES[vector as usize]);
+    } else {
+        serial_write_str("IRQ/unknown vector #");
+        serial_write_usize(vector as usize);
+    }
+    serial_write_str("\r\nSystem halted.\r\n");
+    loop {
+        // SAFETY: hlt suspends the CPU until the next interrupt. With cli
+        // already executed in the stub, this loops forever.
+        unsafe { core::arch::asm!("hlt") };
+    }
+}
+
+/// IDT gate descriptor (16 bytes).
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+struct IdtEntry {
+    offset_low: u16,
+    selector: u16,
+    ist: u8,
+    type_attr: u8, // 0x8E = P=1, DPL=0, interrupt gate
+    offset_mid: u16,
+    offset_high: u32,
+    reserved: u32,
+}
+
+impl IdtEntry {
+    const fn missing() -> Self {
+        Self {
+            offset_low: 0,
+            selector: 0,
+            ist: 0,
+            type_attr: 0,
+            offset_mid: 0,
+            offset_high: 0,
+            reserved: 0,
+        }
+    }
+
+    fn new(handler: u64) -> Self {
+        Self {
+            offset_low: (handler & 0xFFFF) as u16,
+            selector: 0x0008, // kernel code segment
+            ist: 0,
+            type_attr: 0x8E, // P=1, DPL=0, interrupt gate
+            offset_mid: ((handler >> 16) & 0xFFFF) as u16,
+            offset_high: ((handler >> 32) & 0xFFFF_FFFF) as u32,
+            reserved: 0,
+        }
+    }
+}
+
+/// Descriptor-table pointer for the `LIDT` instruction.
+#[repr(C, packed)]
+struct IdtPointer {
+    limit: u16,
+    base: u64,
+}
+
+/// Wrapper that gives the IDT array 16-byte alignment (required by the CPU).
+#[repr(C, align(16))]
+struct IdtTable([IdtEntry; 256]);
+
+/// The kernel IDT — 256 entries, 16-byte aligned.
+///
+/// SAFETY: populated exactly once in `idt_init` before `LIDT` is called,
+/// then treated as read-only by the CPU.
+static mut IDT: IdtTable = IdtTable([IdtEntry::missing(); 256]);
+
+/// Populate the IDT with exception stubs and load the IDTR.
+///
+/// # Safety
+///
+/// - Must be called at CPL=0.
+/// - Interrupts must be disabled.
+/// - Must be called at most once (reinitialising IDTR while interrupts are
+///   disabled is safe, but the previous IDT is abandoned).
+unsafe fn idt_init() {
+    // --- Install exception stubs (vectors 0–31) ---
+    IDT.0[0] = IdtEntry::new(__isr_0 as u64);
+    IDT.0[1] = IdtEntry::new(__isr_1 as u64);
+    IDT.0[2] = IdtEntry::new(__isr_2 as u64);
+    IDT.0[3] = IdtEntry::new(__isr_3 as u64);
+    IDT.0[4] = IdtEntry::new(__isr_4 as u64);
+    IDT.0[5] = IdtEntry::new(__isr_5 as u64);
+    IDT.0[6] = IdtEntry::new(__isr_6 as u64);
+    IDT.0[7] = IdtEntry::new(__isr_7 as u64);
+    IDT.0[8] = IdtEntry::new(__isr_8 as u64);
+    IDT.0[9] = IdtEntry::new(__isr_9 as u64);
+    IDT.0[10] = IdtEntry::new(__isr_10 as u64);
+    IDT.0[11] = IdtEntry::new(__isr_11 as u64);
+    IDT.0[12] = IdtEntry::new(__isr_12 as u64);
+    IDT.0[13] = IdtEntry::new(__isr_13 as u64);
+    IDT.0[14] = IdtEntry::new(__isr_14 as u64);
+    IDT.0[15] = IdtEntry::new(__isr_15 as u64);
+    IDT.0[16] = IdtEntry::new(__isr_16 as u64);
+    IDT.0[17] = IdtEntry::new(__isr_17 as u64);
+    IDT.0[18] = IdtEntry::new(__isr_18 as u64);
+    IDT.0[19] = IdtEntry::new(__isr_19 as u64);
+    IDT.0[20] = IdtEntry::new(__isr_20 as u64);
+    IDT.0[21] = IdtEntry::new(__isr_21 as u64);
+    IDT.0[22] = IdtEntry::new(__isr_22 as u64);
+    IDT.0[23] = IdtEntry::new(__isr_23 as u64);
+    IDT.0[24] = IdtEntry::new(__isr_24 as u64);
+    IDT.0[25] = IdtEntry::new(__isr_25 as u64);
+    IDT.0[26] = IdtEntry::new(__isr_26 as u64);
+    IDT.0[27] = IdtEntry::new(__isr_27 as u64);
+    IDT.0[28] = IdtEntry::new(__isr_28 as u64);
+    IDT.0[29] = IdtEntry::new(__isr_29 as u64);
+    IDT.0[30] = IdtEntry::new(__isr_30 as u64);
+    IDT.0[31] = IdtEntry::new(__isr_31 as u64);
+
+    // --- Install generic IRQ stub for hardware interrupt vectors 32–255 ---
+    let mut i = 32usize;
+    while i < 256 {
+        IDT.0[i] = IdtEntry::new(__isr_irq as u64);
+        i += 1;
+    }
+
+    // --- Load the IDTR ---
+    //
+    // SAFETY: IDT is a valid static, aligned to 16 bytes, fully populated
+    // above. LIDT writes only to the IDTR register. CPL=0 and interrupts
+    // are disabled per the caller's contract.
+    let ptr = IdtPointer {
+        limit: (core::mem::size_of::<IdtTable>() - 1) as u16,
+        base: core::ptr::addr_of!(IDT) as u64,
+    };
+    core::arch::asm!(
+        "lidt [{ptr}]",
+        ptr = in(reg) &ptr,
+        options(readonly, nostack, preserves_flags),
     );
 }
 
