@@ -453,7 +453,7 @@ fn kernel_main(boot_info: &KernelBootInfo) -> ! {
     // - IDT static is fully initialised inside idt_init() before LIDT.
     unsafe { idt_init() };
 
-    serial_write_str("[OK] IDT loaded (32 exception stubs, interrupts disabled)\r\n");
+    serial_write_str("[OK] IDT loaded (32 exception handlers with error codes + RIP + CR2, interrupts disabled)\r\n");
 
     // -----------------------------------------------------------------------
     serial_write_str("[OK] Kernel entered successfully!\r\n");
@@ -474,7 +474,7 @@ fn kernel_main(boot_info: &KernelBootInfo) -> ! {
     }
 
     serial_write_str(
-        "\r\nKernel halting. Phase 1.2.4 (Exception Handlers) not yet implemented.\r\n",
+        "\r\nKernel halting. Exception handlers active — any CPU exception will be caught.\r\n",
     );
 
     halt()
@@ -719,11 +719,25 @@ unsafe fn gdt_init() {
 // This is the Phase-1 inline copy used while boot and kernel share a binary.
 //
 // Stub design (stable Rust — no abi_x86_interrupt / #[naked] required):
-//   global_asm! generates one tiny stub per vector:
-//     1. Put vector number in RDI (SysV first arg).
-//     2. Jump to __exception_common, which calls exception_halt().
-//   exception_halt() prints the vector name + number and halts forever.
-//   Since we never return, we don't need IRETQ or to balance the stack.
+//
+//   Two macro variants handle the difference in CPU stack layout:
+//
+//   isr_stub v    — vectors WITHOUT a CPU-pushed error code:
+//     RDI = vector, RSI = 0, RDX = RSP (→ ExceptionFrame)
+//
+//   isr_stub_ec v — vectors WITH a CPU-pushed error code (8,10-14,17,21,29,30):
+//     CPU pushes error code below RIP, so at entry RSP → error_code.
+//     `pop rsi` consumes it; RSP then → ExceptionFrame, same as above.
+//     RDI = vector, RSI = error_code, RDX = RSP (→ ExceptionFrame)
+//
+//   Both variants jump to __exception_common which calls exception_handler()
+//   with three args: (vector, error_code, *ExceptionFrame).
+//   exception_handler() prints diagnostics and halts forever.
+//   Since we never return, no IRETQ / stack rebalancing is required.
+//
+// Error-code vectors per Intel SDM Vol 3A §6.13:
+//   8 (#DF), 10 (#TS), 11 (#NP), 12 (#SS), 13 (#GP), 14 (#PF),
+//   17 (#AC), 21 (#CP), 29 (#VC), 30 (#SX)
 // ---------------------------------------------------------------------------
 
 use core::arch::global_asm;
@@ -731,63 +745,85 @@ use core::arch::global_asm;
 // Assembly stubs — one per CPU exception vector (0–31) plus one generic
 // stub for hardware IRQ vectors (32–255).
 //
-// All stubs jump to __exception_common which calls exception_halt(vector).
 // Intel syntax is used (.intel_syntax noprefix) for consistency with the
 // inline asm elsewhere in this file.
 global_asm!(
     ".intel_syntax noprefix",
-    // Common landing pad: RDI already contains the vector number.
-    // Calls exception_halt(vector: u64) which never returns.
+    // ---------------------------------------------------------------------------
+    // Common landing pad.
+    //
+    // At entry: RDI = vector, RSI = error_code, RDX = &ExceptionFrame.
+    // Calls exception_handler(vector, error_code, frame) which never returns.
+    // ---------------------------------------------------------------------------
     ".global __exception_common",
     "__exception_common:",
     "cli",
-    "call exception_halt",
-    "ud2", // unreachable — silences assembler fall-through warnings
-    // Macro: one stub per vector — puts vector number in RDI, jumps to common.
+    "call exception_handler",
+    "ud2", // unreachable — traps if the call somehow returns
+    // ---------------------------------------------------------------------------
+    // isr_stub v — no CPU-pushed error code.
+    //   RSP → [RIP, CS, RFLAGS, old_RSP, SS]  (ExceptionFrame) on entry.
+    // ---------------------------------------------------------------------------
     ".macro isr_stub v",
     ".global __isr_\\v",
     "__isr_\\v:",
-    "mov rdi, \\v",
+    "mov rdi, \\v", // arg1: vector number
+    "xor rsi, rsi", // arg2: error_code = 0 (none for this vector)
+    "mov rdx, rsp", // arg3: pointer to ExceptionFrame at current RSP
     "jmp __exception_common",
     ".endm",
-    // CPU exception stubs, vectors 0–31
-    "isr_stub 0",  // #DE  Divide Error
-    "isr_stub 1",  // #DB  Debug
-    "isr_stub 2",  // #NMI Non-Maskable Interrupt
-    "isr_stub 3",  // #BP  Breakpoint
-    "isr_stub 4",  // #OF  Overflow
-    "isr_stub 5",  // #BR  Bound Range Exceeded
-    "isr_stub 6",  // #UD  Invalid Opcode
-    "isr_stub 7",  // #NM  Device Not Available
-    "isr_stub 8",  // #DF  Double Fault         (error code = 0 always)
-    "isr_stub 9",  // (obsolete Coprocessor Segment Overrun)
-    "isr_stub 10", // #TS  Invalid TSS          (error code)
-    "isr_stub 11", // #NP  Segment Not Present  (error code)
-    "isr_stub 12", // #SS  Stack-Segment Fault  (error code)
-    "isr_stub 13", // #GP  General Protection   (error code)
-    "isr_stub 14", // #PF  Page Fault           (error code + CR2)
-    "isr_stub 15", // (reserved)
-    "isr_stub 16", // #MF  x87 FPU Error
-    "isr_stub 17", // #AC  Alignment Check      (error code)
-    "isr_stub 18", // #MC  Machine Check
-    "isr_stub 19", // #XF  SIMD FPU Exception
-    "isr_stub 20", // #VE  Virtualization Exception
-    "isr_stub 21", // #CP  Control Protection   (error code)
-    "isr_stub 22", // (reserved)
-    "isr_stub 23", // (reserved)
-    "isr_stub 24", // (reserved)
-    "isr_stub 25", // (reserved)
-    "isr_stub 26", // (reserved)
-    "isr_stub 27", // (reserved)
-    "isr_stub 28", // #HV  Hypervisor Injection
-    "isr_stub 29", // #VC  VMM Communication    (error code)
-    "isr_stub 30", // #SX  Security Exception   (error code)
-    "isr_stub 31", // (reserved)
+    // ---------------------------------------------------------------------------
+    // isr_stub_ec v — CPU pushes an error code before the handler runs.
+    //   RSP → [error_code, RIP, CS, RFLAGS, old_RSP, SS]  on entry.
+    //   `pop rsi` consumes the error code; RSP then → ExceptionFrame.
+    // ---------------------------------------------------------------------------
+    ".macro isr_stub_ec v",
+    ".global __isr_\\v",
+    "__isr_\\v:",
+    "mov rdi, \\v", // arg1: vector number (clobbers original RDI — we never return)
+    "pop rsi",      // arg2: error_code (CPU-pushed; RSP now → ExceptionFrame)
+    "mov rdx, rsp", // arg3: pointer to ExceptionFrame
+    "jmp __exception_common",
+    ".endm",
+    // CPU exception stubs — vectors 0–31
+    "isr_stub 0",     // #DE  Divide Error               (no error code)
+    "isr_stub 1",     // #DB  Debug                      (no error code)
+    "isr_stub 2",     // #NMI Non-Maskable Interrupt      (no error code)
+    "isr_stub 3",     // #BP  Breakpoint                 (no error code)
+    "isr_stub 4",     // #OF  Overflow                   (no error code)
+    "isr_stub 5",     // #BR  Bound Range Exceeded        (no error code)
+    "isr_stub 6",     // #UD  Invalid Opcode             (no error code)
+    "isr_stub 7",     // #NM  Device Not Available        (no error code)
+    "isr_stub_ec 8",  // #DF  Double Fault               (error code = 0 always)
+    "isr_stub 9",     // (obsolete Coprocessor Segment Overrun, no error code)
+    "isr_stub_ec 10", // #TS  Invalid TSS                (error code: selector)
+    "isr_stub_ec 11", // #NP  Segment Not Present         (error code: selector)
+    "isr_stub_ec 12", // #SS  Stack-Segment Fault         (error code: selector)
+    "isr_stub_ec 13", // #GP  General Protection Fault    (error code: selector or 0)
+    "isr_stub_ec 14", // #PF  Page Fault                 (error code: flags; CR2: address)
+    "isr_stub 15",    // (reserved)
+    "isr_stub 16",    // #MF  x87 FPU Floating-Point Error (no error code)
+    "isr_stub_ec 17", // #AC  Alignment Check            (error code = 0)
+    "isr_stub 18",    // #MC  Machine Check               (no error code)
+    "isr_stub 19",    // #XF  SIMD Floating-Point Exception (no error code)
+    "isr_stub 20",    // #VE  Virtualization Exception    (no error code)
+    "isr_stub_ec 21", // #CP  Control Protection Exception (error code)
+    "isr_stub 22",    // (reserved)
+    "isr_stub 23",    // (reserved)
+    "isr_stub 24",    // (reserved)
+    "isr_stub 25",    // (reserved)
+    "isr_stub 26",    // (reserved)
+    "isr_stub 27",    // (reserved)
+    "isr_stub 28",    // #HV  Hypervisor Injection Exception (no error code)
+    "isr_stub_ec 29", // #VC  VMM Communication Exception  (error code)
+    "isr_stub_ec 30", // #SX  Security Exception           (error code)
+    "isr_stub 31",    // (reserved)
     // Generic stub for hardware IRQ vectors 32–255.
-    // Vector 255 is used as a sentinel; we never inspect it in Phase 1.
     ".global __isr_irq",
     "__isr_irq:",
-    "mov rdi, 255",
+    "mov rdi, 255", // sentinel: hardware IRQ (vector not decoded further)
+    "xor rsi, rsi", // no error code
+    "mov rdx, rsp", // pointer to stack top (not a formal ExceptionFrame, but safe to ignore)
     "jmp __exception_common",
     ".att_syntax prefix", // restore assembler default
 );
@@ -829,6 +865,28 @@ extern "C" {
     fn __isr_irq();
 }
 
+/// CPU-pushed exception frame — layout at RSP when an exception handler runs.
+///
+/// In 64-bit mode the CPU always pushes this 5-quadword frame (regardless of
+/// privilege-level change). For vectors that push an error code, the stubs
+/// consume it with `pop rsi` first, so RSP points here in both cases.
+///
+/// ```text
+/// [RSP +  0]  RIP    — instruction pointer that caused / follows the exception
+/// [RSP +  8]  CS     — code segment (upper 48 bits zero)
+/// [RSP + 16]  RFLAGS — CPU flags at time of exception
+/// [RSP + 24]  RSP    — stack pointer at time of exception
+/// [RSP + 32]  SS     — stack segment (upper 48 bits zero)
+/// ```
+#[repr(C)]
+struct ExceptionFrame {
+    rip: u64,
+    cs: u64,
+    rflags: u64,
+    rsp: u64,
+    ss: u64,
+}
+
 /// Human-readable names for the 32 CPU exception vectors.
 static EXCEPTION_NAMES: [&str; 32] = [
     "#DE: Divide Error",
@@ -867,24 +925,97 @@ static EXCEPTION_NAMES: [&str; 32] = [
 
 /// Common exception handler — never returns.
 ///
-/// Called from all exception stubs with the vector number in `vector`.
-/// Writes the exception name to the serial console and halts the CPU.
+/// Called from all exception stubs with:
+/// - `vector`     : exception vector number (0–31 = CPU exception, 255 = IRQ)
+/// - `error_code` : CPU-pushed error code for vectors that supply one, else 0
+/// - `frame`      : pointer to the CPU-pushed [`ExceptionFrame`] on the stack
+///
+/// Prints a diagnostic over serial and halts the CPU forever.
 ///
 /// # Safety (caller — the asm stubs)
 ///
-/// Called from assembly with `vector` in RDI (SysV AMD64 first argument).
-/// The asm stubs execute `cli` before this call, so interrupts are disabled.
-/// This function must be `#[no_mangle]` so the assembler name matches.
+/// - Called from assembly via the SysV AMD64 convention: RDI, RSI, RDX.
+/// - `frame` points into the interrupt stack and is valid for the lifetime of
+///   this function (which never returns).
+/// - Interrupts are disabled (`cli` executed in the stubs).
+/// - Must be `#[no_mangle]` so the linker name matches the `call` in asm.
 #[no_mangle]
-extern "C" fn exception_halt(vector: u64) -> ! {
-    serial_write_str("\r\n!!! EXCEPTION !!!\r\n");
+extern "C" fn exception_handler(vector: u64, error_code: u64, frame: *const ExceptionFrame) -> ! {
+    serial_write_str("\r\n");
+    serial_write_str("========== KERNEL EXCEPTION ==========\r\n");
+
+    // --- Exception name ---
     if (vector as usize) < EXCEPTION_NAMES.len() {
+        serial_write_str("Vector ");
+        serial_write_usize(vector as usize);
+        serial_write_str(": ");
         serial_write_str(EXCEPTION_NAMES[vector as usize]);
     } else {
-        serial_write_str("IRQ/unknown vector #");
+        serial_write_str("Hardware IRQ / unknown vector #");
         serial_write_usize(vector as usize);
     }
-    serial_write_str("\r\nSystem halted.\r\n");
+    serial_write_str("\r\n");
+
+    // --- Error code (only meaningful for the subset of vectors that push one) ---
+    //
+    // Bitmask of vectors that push an error code (Intel SDM Vol 3A §6.13):
+    //   bit 8  = #DF, bit 10 = #TS, bit 11 = #NP, bit 12 = #SS, bit 13 = #GP,
+    //   bit 14 = #PF, bit 17 = #AC, bit 21 = #CP, bit 29 = #VC, bit 30 = #SX
+    const EC_MASK: u64 = (1 << 8)
+        | (1 << 10)
+        | (1 << 11)
+        | (1 << 12)
+        | (1 << 13)
+        | (1 << 14)
+        | (1 << 17)
+        | (1 << 21)
+        | (1 << 29)
+        | (1 << 30);
+    if vector < 64 && (EC_MASK >> vector) & 1 == 1 {
+        serial_write_str("Error code:   0x");
+        serial_write_usize_hex(error_code as usize);
+        serial_write_str("\r\n");
+    }
+
+    // --- Page fault: read CR2 (faulting virtual address) ---
+    //
+    // CR2 is set by the CPU before the #PF handler runs and remains valid
+    // until the next page fault (which cannot happen here — interrupts off).
+    if vector == 14 {
+        let cr2: u64;
+        // SAFETY: reading CR2 at CPL=0 is unconditionally safe.
+        unsafe { core::arch::asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack)) };
+        serial_write_str("CR2 (fault):  0x");
+        serial_write_usize_hex(cr2 as usize);
+        serial_write_str("\r\n");
+    }
+
+    // --- Exception frame: RIP, RFLAGS, RSP ---
+    //
+    // SAFETY: `frame` is derived from RSP at handler entry — it points to the
+    // CPU-pushed exception frame on the interrupt stack, which is valid for the
+    // lifetime of this function (we never return).
+    if !frame.is_null() {
+        let rip = unsafe { (*frame).rip };
+        let rflags = unsafe { (*frame).rflags };
+        let old_rsp = unsafe { (*frame).rsp };
+
+        serial_write_str("RIP:          0x");
+        serial_write_usize_hex(rip as usize);
+        serial_write_str("\r\n");
+
+        serial_write_str("RFLAGS:       0x");
+        serial_write_usize_hex(rflags as usize);
+        serial_write_str("\r\n");
+
+        serial_write_str("RSP (before): 0x");
+        serial_write_usize_hex(old_rsp as usize);
+        serial_write_str("\r\n");
+    }
+
+    serial_write_str("======================================\r\n");
+    serial_write_str("System halted.\r\n");
+
     loop {
         // SAFETY: hlt suspends the CPU until the next interrupt. With cli
         // already executed in the stub, this loops forever.
