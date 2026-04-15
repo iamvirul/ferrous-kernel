@@ -12,6 +12,7 @@
 
 pub mod arch;
 pub mod drivers;
+pub mod memory;
 
 use drivers::serial::SerialPort;
 

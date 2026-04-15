@@ -460,17 +460,31 @@ fn kernel_main(boot_info: &KernelBootInfo) -> ! {
     serial_write_str("Hello from Ferrous!\r\n");
     serial_write_str("\r\n");
 
-    // Report memory map summary via serial.
-    serial_write_str("Memory map entries: ");
-    serial_write_usize(boot_info.memory_map.count);
-    serial_write_str("\r\n");
+    // -----------------------------------------------------------------------
+    // Step 5: Parse and report the physical memory map.
+    //
+    // Iterates over the KernelMemoryMap received from the bootloader, prints
+    // each region with its classification and size, then summarises totals.
+    //
+    // Note: in Phase 1 this is an inline analysis. The canonical MemoryMap
+    // type (Phase 1.3.1) lives in ferrous-boot-info and is accessible via
+    // kernel::memory after the kernel binary is separated in Phase 2.
+    print_memory_map(&boot_info.memory_map);
 
     if boot_info.acpi_rsdp != 0 {
-        serial_write_str("[INFO] ACPI RSDP present\r\n");
+        serial_write_str("[INFO] ACPI RSDP: 0x");
+        serial_write_usize_hex(boot_info.acpi_rsdp as usize);
+        serial_write_str("\r\n");
     }
 
     if boot_info.has_framebuffer {
-        serial_write_str("[INFO] Framebuffer present\r\n");
+        serial_write_str("[INFO] Framebuffer: ");
+        serial_write_usize(boot_info.framebuffer.width as usize);
+        serial_write_str("x");
+        serial_write_usize(boot_info.framebuffer.height as usize);
+        serial_write_str(" @ 0x");
+        serial_write_usize_hex(boot_info.framebuffer.base as usize);
+        serial_write_str("\r\n");
     }
 
     serial_write_str(
@@ -1143,6 +1157,122 @@ unsafe fn idt_init() {
         ptr = in(reg) &ptr,
         options(readonly, nostack, preserves_flags),
     );
+}
+
+// ---------------------------------------------------------------------------
+// Memory map analysis (Phase 1.3.1 — inline boot-side implementation)
+//
+// The canonical MemoryMap type lives in ferrous-boot-info. This helper
+// prints the full map and summary statistics over serial during early boot.
+// ---------------------------------------------------------------------------
+
+/// Returns a short label for a UEFI memory type code.
+fn memory_type_label(ty: u32) -> &'static str {
+    use ferrous_boot_info::memory_type;
+    match ty {
+        memory_type::RESERVED => "Reserved",
+        memory_type::LOADER_CODE => "LoaderCode",
+        memory_type::LOADER_DATA => "LoaderData",
+        memory_type::BOOT_SERVICES_CODE => "BootServicesCode",
+        memory_type::BOOT_SERVICES_DATA => "BootServicesData",
+        memory_type::RUNTIME_SERVICES_CODE => "RuntimeServicesCode",
+        memory_type::RUNTIME_SERVICES_DATA => "RuntimeServicesData",
+        memory_type::CONVENTIONAL => "Conventional",
+        memory_type::UNUSABLE => "Unusable",
+        memory_type::ACPI_RECLAIM => "AcpiReclaim",
+        memory_type::ACPI_NON_VOLATILE => "AcpiNonVolatile",
+        memory_type::MMIO => "Mmio",
+        memory_type::MMIO_PORT_SPACE => "MmioPortSpace",
+        memory_type::PERSISTENT_MEMORY => "PersistentMemory",
+        _ => "Unknown",
+    }
+}
+
+/// Returns true for UEFI types that are usable after boot services exit.
+fn is_usable_after_boot(ty: u32) -> bool {
+    use ferrous_boot_info::memory_type;
+    matches!(
+        ty,
+        memory_type::CONVENTIONAL
+            | memory_type::BOOT_SERVICES_CODE
+            | memory_type::BOOT_SERVICES_DATA
+            | memory_type::LOADER_CODE
+            | memory_type::LOADER_DATA
+            | memory_type::ACPI_RECLAIM
+    )
+}
+
+/// Returns true for UEFI types that map to address-space holes (not RAM).
+fn is_mmio(ty: u32) -> bool {
+    use ferrous_boot_info::memory_type;
+    matches!(ty, memory_type::MMIO | memory_type::MMIO_PORT_SPACE)
+}
+
+/// Print the full physical memory map and summary statistics over serial.
+fn print_memory_map(map: &ferrous_boot_info::KernelMemoryMap) {
+    serial_write_str("[INFO] Physical memory map (");
+    serial_write_usize(map.count);
+    serial_write_str(" entries");
+    if map.truncated {
+        serial_write_str(", TRUNCATED");
+    }
+    serial_write_str("):\r\n");
+
+    let mut total_bytes: u64 = 0;
+    let mut usable_bytes: u64 = 0;
+    let mut reclaimable_bytes: u64 = 0;
+
+    for (i, desc) in map.entries().iter().enumerate() {
+        if desc.page_count == 0 {
+            continue;
+        }
+
+        let size = desc.page_count * 4096;
+        let end = desc.phys_start.saturating_add(size);
+
+        if !is_mmio(desc.ty) {
+            total_bytes = total_bytes.saturating_add(size);
+        }
+        if is_usable_after_boot(desc.ty) {
+            if desc.ty == ferrous_boot_info::memory_type::CONVENTIONAL {
+                usable_bytes = usable_bytes.saturating_add(size);
+            } else {
+                reclaimable_bytes = reclaimable_bytes.saturating_add(size);
+            }
+        }
+
+        // Format: "  [ 0] 0x00001000 - 0x00100000  1020 KiB  Conventional"
+        serial_write_str("  [");
+        serial_write_usize(i);
+        serial_write_str("] 0x");
+        serial_write_usize_hex(desc.phys_start as usize);
+        serial_write_str(" - 0x");
+        serial_write_usize_hex(end as usize);
+        serial_write_str("  ");
+        let kib = size / 1024;
+        if kib >= 1024 {
+            serial_write_usize((kib / 1024) as usize);
+            serial_write_str(" MiB");
+        } else {
+            serial_write_usize(kib as usize);
+            serial_write_str(" KiB");
+        }
+        serial_write_str("  ");
+        serial_write_str(memory_type_label(desc.ty));
+        serial_write_str("\r\n");
+    }
+
+    if map.truncated {
+        serial_write_str("[WARN] Memory map was truncated — some regions are missing!\r\n");
+    }
+
+    serial_write_str("[INFO] RAM: ");
+    serial_write_usize((total_bytes / 1024 / 1024) as usize);
+    serial_write_str(" MiB total | ");
+    serial_write_usize((usable_bytes / 1024 / 1024) as usize);
+    serial_write_str(" MiB usable | ");
+    serial_write_usize((reclaimable_bytes / 1024 / 1024) as usize);
+    serial_write_str(" MiB reclaimable\r\n");
 }
 
 /// Halt the CPU permanently.

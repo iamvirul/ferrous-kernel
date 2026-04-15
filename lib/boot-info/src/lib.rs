@@ -217,6 +217,285 @@ impl KernelBootInfo {
 }
 
 // ---------------------------------------------------------------------------
+// Memory map parsing — higher-level view of KernelMemoryMap
+//
+// These types are consumed by the kernel's physical memory allocator.
+// They live here (rather than in the kernel crate) because they operate
+// purely on KernelMemoryMap data and can be tested on the host without
+// targeting x86_64-unknown-none.
+// ---------------------------------------------------------------------------
+
+/// High-level classification of a UEFI memory region.
+///
+/// Groups the raw UEFI memory type codes into kernel-relevant categories.
+/// Use this to decide whether a region may be allocated, reclaimed, or
+/// left alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryRegionKind {
+    /// Available for physical page allocation immediately after boot.
+    Usable,
+    /// Occupied by bootloader code/data; reclaimable once the kernel no
+    /// longer needs the bootloader (after Phase 1 handoff is complete).
+    BootloaderReclaimable,
+    /// Holds ACPI tables; reclaimable after ACPI initialisation (Phase 2+).
+    AcpiReclaimable,
+    /// ACPI firmware non-volatile storage — preserve indefinitely.
+    AcpiNonVolatile,
+    /// Firmware runtime code/data — must remain identity-mapped forever.
+    FirmwareRuntime,
+    /// Memory-mapped I/O — not RAM, never allocate.
+    Mmio,
+    /// NVDIMM persistent memory — requires special driver handling.
+    PersistentMemory,
+    /// Defective RAM reported by firmware.
+    Unusable,
+    /// Firmware-reserved or unrecognised type — do not touch.
+    Reserved,
+}
+
+impl MemoryRegionKind {
+    /// True if the physical allocator may use this region after boot
+    /// reclamation completes (conventional + bootloader + ACPI reclaimable).
+    #[inline]
+    pub fn is_reclaimable_after_boot(self) -> bool {
+        matches!(
+            self,
+            Self::Usable | Self::BootloaderReclaimable | Self::AcpiReclaimable
+        )
+    }
+
+    /// True only for conventional memory — immediately available before any
+    /// reclamation pass.
+    #[inline]
+    pub fn is_immediately_usable(self) -> bool {
+        self == Self::Usable
+    }
+
+    /// Short human-readable label for serial diagnostics.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Usable => "Conventional",
+            Self::BootloaderReclaimable => "BootloaderReclaimable",
+            Self::AcpiReclaimable => "AcpiReclaimable",
+            Self::AcpiNonVolatile => "AcpiNonVolatile",
+            Self::FirmwareRuntime => "FirmwareRuntime",
+            Self::Mmio => "Mmio",
+            Self::PersistentMemory => "PersistentMemory",
+            Self::Unusable => "Unusable",
+            Self::Reserved => "Reserved",
+        }
+    }
+}
+
+impl From<u32> for MemoryRegionKind {
+    fn from(ty: u32) -> Self {
+        match ty {
+            memory_type::CONVENTIONAL => Self::Usable,
+            memory_type::LOADER_CODE
+            | memory_type::LOADER_DATA
+            | memory_type::BOOT_SERVICES_CODE
+            | memory_type::BOOT_SERVICES_DATA => Self::BootloaderReclaimable,
+            memory_type::ACPI_RECLAIM => Self::AcpiReclaimable,
+            memory_type::ACPI_NON_VOLATILE => Self::AcpiNonVolatile,
+            memory_type::RUNTIME_SERVICES_CODE | memory_type::RUNTIME_SERVICES_DATA => {
+                Self::FirmwareRuntime
+            }
+            memory_type::MMIO | memory_type::MMIO_PORT_SPACE => Self::Mmio,
+            memory_type::PERSISTENT_MEMORY => Self::PersistentMemory,
+            memory_type::UNUSABLE => Self::Unusable,
+            _ => Self::Reserved, // RESERVED (0) and any unknown type
+        }
+    }
+}
+
+/// Statistics derived from a parsed memory map.
+///
+/// Computed once during [`MemoryMap::parse()`] and cached inside the map.
+#[derive(Debug, Clone, Copy)]
+pub struct MemoryStats {
+    /// Total physical RAM in bytes (excludes MMIO and firmware runtime).
+    pub total_bytes: u64,
+    /// Bytes of immediately-usable conventional memory.
+    pub usable_bytes: u64,
+    /// Bytes reclaimable after boot (bootloader + ACPI reclaimable).
+    pub reclaimable_bytes: u64,
+    /// Number of valid (non-zero-size) regions in the parsed map.
+    pub region_count: usize,
+    /// Number of immediately-usable (conventional) regions.
+    pub usable_region_count: usize,
+    /// True if the bootloader truncated the map (source had more entries than
+    /// [`MAX_MEMORY_DESCRIPTORS`]).
+    pub is_truncated: bool,
+}
+
+impl MemoryStats {
+    /// Total bytes the allocator may use after all reclamation passes.
+    #[inline]
+    pub fn total_usable_after_boot(self) -> u64 {
+        self.usable_bytes.saturating_add(self.reclaimable_bytes)
+    }
+}
+
+/// Errors returned by [`MemoryMap::parse()`].
+#[derive(Debug)]
+pub enum ParseError {
+    /// The memory map contains zero valid (non-zero-size) entries.
+    Empty,
+    /// A descriptor has a non-page-aligned base address (UEFI spec violation).
+    UnalignedBase {
+        /// Zero-based index of the offending descriptor in the source map.
+        index: usize,
+        /// The misaligned physical address.
+        phys_start: u64,
+    },
+}
+
+/// Zero-value descriptor used to initialise the fixed-size array.
+///
+/// `KernelMemoryDescriptor` is `Copy` and all-zero is a valid sentinel value
+/// (type 0 = RESERVED, size 0 — filtered out during parse).
+const ZERO_DESC: KernelMemoryDescriptor = KernelMemoryDescriptor {
+    ty: 0,
+    _pad: 0,
+    phys_start: 0,
+    page_count: 0,
+    attribute: 0,
+};
+
+/// Parsed and validated physical memory map.
+///
+/// Constructed from the bootloader-provided [`KernelMemoryMap`] during early
+/// kernel initialisation. After construction this is effectively immutable and
+/// serves as the authoritative physical memory layout for the allocator
+/// (Phase 1.3.2 and beyond).
+///
+/// # Obtaining an instance
+///
+/// In the kernel, use `kernel::memory::init(&boot_info.memory_map)` to
+/// initialise the global instance, then `kernel::memory::get()` to borrow it.
+pub struct MemoryMap {
+    // Not derived — KernelMemoryDescriptor's large fixed array makes Debug
+    // output impractical and KernelMemoryDescriptor doesn't derive Debug.
+    // Use stats() for diagnostic output.
+    descriptors: [KernelMemoryDescriptor; MAX_MEMORY_DESCRIPTORS],
+    count: usize,
+    stats: MemoryStats,
+}
+
+impl MemoryMap {
+    /// Parse and validate the bootloader-provided memory map.
+    ///
+    /// Entries with `page_count == 0` are silently skipped — some firmware
+    /// produces zero-size descriptors as padding.
+    ///
+    /// # Errors
+    ///
+    /// - [`ParseError::Empty`]: every entry has zero pages (or `count == 0`).
+    /// - [`ParseError::UnalignedBase`]: a descriptor's `phys_start` is not
+    ///   4 KiB aligned (guaranteed by the UEFI spec; this catches corrupt maps).
+    pub fn parse(source: &KernelMemoryMap) -> Result<Self, ParseError> {
+        let mut descriptors = [ZERO_DESC; MAX_MEMORY_DESCRIPTORS];
+        let mut count = 0usize;
+
+        let mut total_bytes: u64 = 0;
+        let mut usable_bytes: u64 = 0;
+        let mut reclaimable_bytes: u64 = 0;
+        let mut usable_region_count: usize = 0;
+
+        for (i, desc) in source.entries().iter().enumerate() {
+            // Skip zero-size entries emitted by some firmware.
+            if desc.page_count == 0 {
+                continue;
+            }
+
+            // UEFI spec §7.2: EFI_PHYSICAL_ADDRESS must be page-aligned.
+            if desc.phys_start & 0xFFF != 0 {
+                return Err(ParseError::UnalignedBase {
+                    index: i,
+                    phys_start: desc.phys_start,
+                });
+            }
+
+            let size = desc.size_bytes();
+            let kind = MemoryRegionKind::from(desc.ty);
+
+            // Accumulate RAM totals, excluding address-space holes (MMIO).
+            match kind {
+                MemoryRegionKind::Mmio | MemoryRegionKind::FirmwareRuntime => {}
+                _ => total_bytes = total_bytes.saturating_add(size),
+            }
+
+            match kind {
+                MemoryRegionKind::Usable => {
+                    usable_bytes = usable_bytes.saturating_add(size);
+                    usable_region_count += 1;
+                }
+                MemoryRegionKind::BootloaderReclaimable | MemoryRegionKind::AcpiReclaimable => {
+                    reclaimable_bytes = reclaimable_bytes.saturating_add(size);
+                }
+                _ => {}
+            }
+
+            descriptors[count] = *desc;
+            count += 1;
+        }
+
+        if count == 0 {
+            return Err(ParseError::Empty);
+        }
+
+        Ok(Self {
+            descriptors,
+            count,
+            stats: MemoryStats {
+                total_bytes,
+                usable_bytes,
+                reclaimable_bytes,
+                region_count: count,
+                usable_region_count,
+                is_truncated: source.truncated,
+            },
+        })
+    }
+
+    /// Returns memory statistics computed during parsing.
+    #[inline]
+    pub fn stats(&self) -> &MemoryStats {
+        &self.stats
+    }
+
+    /// Returns all valid (non-zero-size) memory descriptors.
+    #[inline]
+    pub fn regions(&self) -> &[KernelMemoryDescriptor] {
+        &self.descriptors[..self.count]
+    }
+
+    /// Iterates over all immediately-usable (conventional) regions.
+    pub fn usable_regions(&self) -> impl Iterator<Item = &KernelMemoryDescriptor> {
+        self.regions()
+            .iter()
+            .filter(|d| MemoryRegionKind::from(d.ty) == MemoryRegionKind::Usable)
+    }
+
+    /// Iterates over all regions usable after boot reclamation.
+    ///
+    /// Includes conventional, bootloader-reclaimable, and ACPI-reclaimable
+    /// regions.
+    pub fn reclaimable_regions(&self) -> impl Iterator<Item = &KernelMemoryDescriptor> {
+        self.regions()
+            .iter()
+            .filter(|d| MemoryRegionKind::from(d.ty).is_reclaimable_after_boot())
+    }
+
+    /// Iterates over all regions matching the given UEFI memory type constant.
+    ///
+    /// Use the [`memory_type`] module constants as the `ty` argument.
+    pub fn regions_of_type(&self, ty: u32) -> impl Iterator<Item = &KernelMemoryDescriptor> {
+        self.regions().iter().filter(move |d| d.ty == ty)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 //
 // Even though this crate is #![no_std], cargo test links std for the test
@@ -434,6 +713,326 @@ mod tests {
         assert_ne!(pixel_format::BGR, pixel_format::BITMASK);
         assert_ne!(pixel_format::BGR, pixel_format::UNKNOWN);
         assert_ne!(pixel_format::BITMASK, pixel_format::UNKNOWN);
+    }
+
+    // -----------------------------------------------------------------------
+    // MemoryRegionKind — classification
+    // -----------------------------------------------------------------------
+
+    fn make_desc(ty: u32, phys_start: u64, page_count: u64) -> KernelMemoryDescriptor {
+        KernelMemoryDescriptor {
+            ty,
+            _pad: 0,
+            phys_start,
+            page_count,
+            attribute: 0,
+        }
+    }
+
+    fn make_map(descs: &[KernelMemoryDescriptor]) -> KernelMemoryMap {
+        let mut map = KernelMemoryMap::new();
+        for (i, desc) in descs.iter().enumerate() {
+            map.descriptors[i] = *desc;
+        }
+        map.count = descs.len();
+        map
+    }
+
+    #[test]
+    fn conventional_memory_is_usable() {
+        let kind = MemoryRegionKind::from(memory_type::CONVENTIONAL);
+        assert_eq!(kind, MemoryRegionKind::Usable);
+        assert!(kind.is_immediately_usable());
+        assert!(kind.is_reclaimable_after_boot());
+    }
+
+    #[test]
+    fn boot_services_are_bootloader_reclaimable() {
+        for ty in [
+            memory_type::BOOT_SERVICES_CODE,
+            memory_type::BOOT_SERVICES_DATA,
+            memory_type::LOADER_CODE,
+            memory_type::LOADER_DATA,
+        ] {
+            let kind = MemoryRegionKind::from(ty);
+            assert_eq!(
+                kind,
+                MemoryRegionKind::BootloaderReclaimable,
+                "type {} should be BootloaderReclaimable",
+                ty
+            );
+            assert!(
+                !kind.is_immediately_usable(),
+                "type {} should not be immediately usable",
+                ty
+            );
+            assert!(
+                kind.is_reclaimable_after_boot(),
+                "type {} should be reclaimable after boot",
+                ty
+            );
+        }
+    }
+
+    #[test]
+    fn acpi_reclaim_is_reclaimable_after_boot() {
+        let kind = MemoryRegionKind::from(memory_type::ACPI_RECLAIM);
+        assert_eq!(kind, MemoryRegionKind::AcpiReclaimable);
+        assert!(!kind.is_immediately_usable());
+        assert!(kind.is_reclaimable_after_boot());
+    }
+
+    #[test]
+    fn mmio_is_not_reclaimable() {
+        for ty in [memory_type::MMIO, memory_type::MMIO_PORT_SPACE] {
+            let kind = MemoryRegionKind::from(ty);
+            assert_eq!(kind, MemoryRegionKind::Mmio, "type {}", ty);
+            assert!(!kind.is_immediately_usable());
+            assert!(!kind.is_reclaimable_after_boot());
+        }
+    }
+
+    #[test]
+    fn firmware_runtime_is_not_reclaimable() {
+        for ty in [
+            memory_type::RUNTIME_SERVICES_CODE,
+            memory_type::RUNTIME_SERVICES_DATA,
+        ] {
+            let kind = MemoryRegionKind::from(ty);
+            assert_eq!(kind, MemoryRegionKind::FirmwareRuntime, "type {}", ty);
+            assert!(!kind.is_reclaimable_after_boot());
+        }
+    }
+
+    #[test]
+    fn reserved_type_zero_is_reserved() {
+        let kind = MemoryRegionKind::from(memory_type::RESERVED);
+        assert_eq!(kind, MemoryRegionKind::Reserved);
+        assert!(!kind.is_immediately_usable());
+        assert!(!kind.is_reclaimable_after_boot());
+    }
+
+    #[test]
+    fn unknown_type_is_reserved() {
+        // Any type not explicitly mapped must fall through to Reserved.
+        let kind = MemoryRegionKind::from(0xFF_u32);
+        assert_eq!(kind, MemoryRegionKind::Reserved);
+    }
+
+    #[test]
+    fn region_kind_names_are_non_empty() {
+        let kinds = [
+            MemoryRegionKind::Usable,
+            MemoryRegionKind::BootloaderReclaimable,
+            MemoryRegionKind::AcpiReclaimable,
+            MemoryRegionKind::AcpiNonVolatile,
+            MemoryRegionKind::FirmwareRuntime,
+            MemoryRegionKind::Mmio,
+            MemoryRegionKind::PersistentMemory,
+            MemoryRegionKind::Unusable,
+            MemoryRegionKind::Reserved,
+        ];
+        for kind in kinds {
+            assert!(
+                !kind.name().is_empty(),
+                "{:?}.name() must not be empty",
+                kind
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // MemoryMap::parse — error paths
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_empty_map_returns_empty_error() {
+        let map = KernelMemoryMap::new();
+        assert!(matches!(MemoryMap::parse(&map), Err(ParseError::Empty)));
+    }
+
+    #[test]
+    fn parse_all_zero_page_count_returns_empty_error() {
+        // Firmware padding entries (page_count == 0) are skipped; if all
+        // entries are zero-size the result must be Empty.
+        let map = make_map(&[make_desc(memory_type::CONVENTIONAL, 0x1000, 0)]);
+        assert!(matches!(MemoryMap::parse(&map), Err(ParseError::Empty)));
+    }
+
+    #[test]
+    fn parse_unaligned_base_returns_error() {
+        // phys_start must be 4 KiB aligned (UEFI spec).
+        let map = make_map(&[make_desc(memory_type::CONVENTIONAL, 0x1001, 10)]);
+        match MemoryMap::parse(&map) {
+            Err(ParseError::UnalignedBase {
+                index: 0,
+                phys_start: 0x1001,
+            }) => {}
+            Err(e) => panic!("expected UnalignedBase(0, 0x1001), got {:?}", e),
+            Ok(_) => panic!("expected Err, got Ok"),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // MemoryMap::parse — happy paths and statistics
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_single_conventional_region() {
+        let map = make_map(&[make_desc(memory_type::CONVENTIONAL, 0x1000, 100)]);
+        let parsed = MemoryMap::parse(&map).unwrap();
+        let stats = parsed.stats();
+        assert_eq!(stats.region_count, 1);
+        assert_eq!(stats.usable_bytes, 100 * 4096);
+        assert_eq!(stats.reclaimable_bytes, 0);
+        assert_eq!(stats.usable_region_count, 1);
+        assert!(!stats.is_truncated);
+    }
+
+    #[test]
+    fn parse_skips_zero_page_count_entries() {
+        let map = make_map(&[
+            make_desc(memory_type::CONVENTIONAL, 0x1000, 0), // skipped
+            make_desc(memory_type::CONVENTIONAL, 0x2000, 10), // counted
+        ]);
+        let parsed = MemoryMap::parse(&map).unwrap();
+        assert_eq!(parsed.stats().region_count, 1);
+        assert_eq!(parsed.stats().usable_bytes, 10 * 4096);
+    }
+
+    #[test]
+    fn parse_mixed_regions_computes_correct_stats() {
+        let map = make_map(&[
+            make_desc(memory_type::CONVENTIONAL, 0x0000_1000, 100), // 400 KiB usable
+            make_desc(memory_type::BOOT_SERVICES_DATA, 0x0010_0000, 50), // 200 KiB reclaimable
+            make_desc(memory_type::MMIO, 0xFEC0_0000, 4),           // excluded from RAM
+            make_desc(memory_type::RESERVED, 0x0000_F000, 1),       // not usable
+        ]);
+        let parsed = MemoryMap::parse(&map).unwrap();
+        let stats = parsed.stats();
+
+        assert_eq!(stats.region_count, 4);
+        assert_eq!(stats.usable_bytes, 100 * 4096);
+        assert_eq!(stats.reclaimable_bytes, 50 * 4096);
+        assert_eq!(stats.usable_region_count, 1);
+        // MMIO is excluded; RESERVED is included in total RAM
+        assert_eq!(stats.total_bytes, (100 + 50 + 1) * 4096);
+    }
+
+    #[test]
+    fn mmio_excluded_from_total_ram() {
+        let map = make_map(&[
+            make_desc(memory_type::CONVENTIONAL, 0x1000, 10),
+            make_desc(memory_type::MMIO, 0xFEC0_0000, 100),
+        ]);
+        let parsed = MemoryMap::parse(&map).unwrap();
+        // Only conventional counts toward total_bytes.
+        assert_eq!(parsed.stats().total_bytes, 10 * 4096);
+    }
+
+    #[test]
+    fn firmware_runtime_excluded_from_total_ram() {
+        let map = make_map(&[
+            make_desc(memory_type::CONVENTIONAL, 0x1000, 10),
+            make_desc(memory_type::RUNTIME_SERVICES_DATA, 0x10_0000, 5),
+        ]);
+        let parsed = MemoryMap::parse(&map).unwrap();
+        // Runtime services are not RAM we can use or count.
+        assert_eq!(parsed.stats().total_bytes, 10 * 4096);
+    }
+
+    #[test]
+    fn truncated_flag_propagates_to_stats() {
+        let mut map = KernelMemoryMap::new();
+        map.descriptors[0] = make_desc(memory_type::CONVENTIONAL, 0x1000, 10);
+        map.count = 1;
+        map.truncated = true;
+        let parsed = MemoryMap::parse(&map).unwrap();
+        assert!(parsed.stats().is_truncated);
+    }
+
+    #[test]
+    fn total_usable_after_boot_sums_usable_and_reclaimable() {
+        let map = make_map(&[
+            make_desc(memory_type::CONVENTIONAL, 0x1000, 100),
+            make_desc(memory_type::BOOT_SERVICES_DATA, 0x10_0000, 50),
+        ]);
+        let parsed = MemoryMap::parse(&map).unwrap();
+        let stats = parsed.stats();
+        assert_eq!(
+            stats.total_usable_after_boot(),
+            stats.usable_bytes + stats.reclaimable_bytes
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // MemoryMap query methods
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn usable_regions_returns_only_conventional() {
+        let map = make_map(&[
+            make_desc(memory_type::CONVENTIONAL, 0x1000, 10),
+            make_desc(memory_type::RESERVED, 0xF000, 1),
+            make_desc(memory_type::CONVENTIONAL, 0x10_0000, 200),
+        ]);
+        let parsed = MemoryMap::parse(&map).unwrap();
+        let usable: std::vec::Vec<_> = parsed.usable_regions().collect();
+        assert_eq!(usable.len(), 2);
+        assert!(usable.iter().all(|d| d.ty == memory_type::CONVENTIONAL));
+    }
+
+    #[test]
+    fn reclaimable_regions_includes_bootloader_and_conventional() {
+        let map = make_map(&[
+            make_desc(memory_type::CONVENTIONAL, 0x1000, 10),
+            make_desc(memory_type::BOOT_SERVICES_CODE, 0x10_0000, 5),
+            make_desc(memory_type::LOADER_DATA, 0x20_0000, 3),
+            make_desc(memory_type::MMIO, 0xFEC0_0000, 4), // excluded
+        ]);
+        let parsed = MemoryMap::parse(&map).unwrap();
+        let reclaimable: std::vec::Vec<_> = parsed.reclaimable_regions().collect();
+        assert_eq!(reclaimable.len(), 3); // CONVENTIONAL + BOOT_SERVICES_CODE + LOADER_DATA
+    }
+
+    #[test]
+    fn regions_of_type_returns_only_matching() {
+        let map = make_map(&[
+            make_desc(memory_type::CONVENTIONAL, 0x1000, 10),
+            make_desc(memory_type::MMIO, 0xFEC0_0000, 4),
+            make_desc(memory_type::CONVENTIONAL, 0x10_0000, 200),
+        ]);
+        let parsed = MemoryMap::parse(&map).unwrap();
+        let conventional: std::vec::Vec<_> =
+            parsed.regions_of_type(memory_type::CONVENTIONAL).collect();
+        assert_eq!(conventional.len(), 2);
+    }
+
+    #[test]
+    fn regions_returns_all_non_zero_entries() {
+        let map = make_map(&[
+            make_desc(memory_type::CONVENTIONAL, 0x1000, 10),
+            make_desc(memory_type::RESERVED, 0xF000, 1),
+            make_desc(memory_type::MMIO, 0xFEC0_0000, 4),
+        ]);
+        let parsed = MemoryMap::parse(&map).unwrap();
+        assert_eq!(parsed.regions().len(), 3);
+    }
+
+    // -----------------------------------------------------------------------
+    // Large map (stress test at MAX_MEMORY_DESCRIPTORS)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_max_descriptors() {
+        let mut map = KernelMemoryMap::new();
+        for i in 0..MAX_MEMORY_DESCRIPTORS {
+            map.descriptors[i] = make_desc(memory_type::CONVENTIONAL, (i as u64 + 1) * 0x1000, 1);
+        }
+        map.count = MAX_MEMORY_DESCRIPTORS;
+        let parsed = MemoryMap::parse(&map).unwrap();
+        assert_eq!(parsed.stats().region_count, MAX_MEMORY_DESCRIPTORS);
+        assert_eq!(parsed.stats().usable_region_count, MAX_MEMORY_DESCRIPTORS);
     }
 
     // -----------------------------------------------------------------------
