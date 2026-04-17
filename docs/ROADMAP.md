@@ -149,11 +149,11 @@ Every milestone must advance these core goals:
 
 | Task | Issue | Status | Priority |
 |------|-------|--------|----------|
-| 2.1.1 Task and Process Data Structures | — | Not Started | Critical |
-| 2.1.2 Address Space Management | — | Not Started | Critical |
-| 2.1.3 ELF Binary Loader | — | Not Started | High |
-| 2.1.4 Kernel/User Mode Transition | — | Not Started | Critical |
-| 2.1.5 System Call Interface (minimal) | — | Not Started | Critical |
+| 2.1.1 Task and Process Data Structures | #66 | Not Started | Critical |
+| 2.1.2 Address Space Management | #67 | Not Started | Critical |
+| 2.1.3 ELF Binary Loader | #68 | Not Started | High |
+| 2.1.4 Kernel/User Mode Transition | #69 | Not Started | Critical |
+| 2.1.5 System Call Interface (minimal) | #70 | Not Started | Critical |
 
 **Dependencies:** Phase 1.3 (memory management) must be complete.
 
@@ -161,11 +161,11 @@ Every milestone must advance these core goals:
 
 | Task | Issue | Status | Priority |
 |------|-------|--------|----------|
-| 2.2.1 Runnable Task Queue | — | Not Started | Critical |
-| 2.2.2 Basic Round-Robin Scheduler | — | Not Started | Critical |
-| 2.2.3 Context Switching (assembly + Rust) | — | Not Started | Critical |
-| 2.2.4 Timer Interrupts (PIT/APIC) | — | Not Started | High |
-| 2.2.5 Idle Task | — | Not Started | High |
+| 2.2.1 Runnable Task Queue | #71 | Not Started | Critical |
+| 2.2.2 Basic Round-Robin Scheduler | #72 | Not Started | Critical |
+| 2.2.3 Context Switching (assembly + Rust) | #73 | Not Started | Critical |
+| 2.2.4 Timer Interrupts (PIT/APIC) | #74 | Not Started | High |
+| 2.2.5 Idle Task | #75 | Not Started | High |
 
 **Dependencies:** 2.1.1 (task structures) must be complete.
 
@@ -173,10 +173,10 @@ Every milestone must advance these core goals:
 
 | Task | Issue | Status | Priority |
 |------|-------|--------|----------|
-| 2.3.1 Capability Data Structures | — | Not Started | Critical |
-| 2.3.2 Capability Derivation and Delegation | — | Not Started | Critical |
-| 2.3.3 Capability-Based Syscalls (grant, revoke, derive) | — | Not Started | High |
-| 2.3.4 Initial Capability Space for Processes | — | Not Started | High |
+| 2.3.1 Capability Data Structures | #76 | Not Started | Critical |
+| 2.3.2 Capability Derivation and Delegation | #77 | Not Started | Critical |
+| 2.3.3 Capability-Based Syscalls (grant, revoke, derive) | #78 | Not Started | High |
+| 2.3.4 Initial Capability Space for Processes | #79 | Not Started | High |
 
 **Dependencies:** 2.1.5 (syscall interface) must be complete.
 
@@ -184,10 +184,10 @@ Every milestone must advance these core goals:
 
 | Task | Issue | Status | Priority |
 |------|-------|--------|----------|
-| 2.4.1 Endpoint and Channel Data Structures | — | Not Started | Critical |
-| 2.4.2 Synchronous Send/Receive | — | Not Started | Critical |
-| 2.4.3 Message Buffer Management | — | Not Started | High |
-| 2.4.4 IPC Capability Integration | — | Not Started | High |
+| 2.4.1 Endpoint and Channel Data Structures | #80 | Not Started | Critical |
+| 2.4.2 Synchronous Send/Receive | #81 | Not Started | Critical |
+| 2.4.3 Message Buffer Management | #82 | Not Started | High |
+| 2.4.4 IPC Capability Integration | #83 | Not Started | High |
 
 **Dependencies:** 2.2 (scheduler) and 2.3.1 (capability structures) must be complete.
 
@@ -195,9 +195,9 @@ Every milestone must advance these core goals:
 
 | Task | Issue | Status | Priority |
 |------|-------|--------|----------|
-| 2.5.1 Minimal Init Process | — | Not Started | Critical |
-| 2.5.2 Core Syscalls (exit, yield, send, receive) | — | Not Started | Critical |
-| 2.5.3 Load and Execute First Userspace Binary | — | Not Started | Critical |
+| 2.5.1 Minimal Init Process | #84 | Not Started | Critical |
+| 2.5.2 Core Syscalls (exit, yield, send, receive) | #85 | Not Started | Critical |
+| 2.5.3 Load and Execute First Userspace Binary | #86 | Not Started | Critical |
 
 **Dependencies:** 2.1 through 2.4 must be complete.
 
