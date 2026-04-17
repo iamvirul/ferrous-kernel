@@ -1,6 +1,6 @@
 # Ferrous Kernel - Development Roadmap
 
-**Last Updated:** 2026-03-07
+**Last Updated:** 2026-04-17
 **Status:** Phase 1 — Proof of Life (In Progress)
 
 ---
@@ -87,8 +87,11 @@ Every milestone must advance these core goals:
 - `scripts/verify-boot.sh` added — automated boot verification for CI; `docs/QEMU_TESTING.md` documents expected output and troubleshooting
 - `kernel/src/arch/x86_64/stack.rs` added — `KernelStack<N>` type with `top()`/`bottom()` and guard-region constants; 64 KiB primary stack active in `kernel_main`, bounds printed to serial
 - `kernel/src/arch/x86_64/gdt.rs` added — minimal 3-entry GDT (null, kernel-code 0x08, kernel-data 0x10); loaded via `LGDT`, CS reloaded via far-return (`RETFQ`), data segments reloaded; verified active in QEMU serial output
-- `kernel/src/arch/x86_64/idt.rs` added — 256-entry IDT with `IdtEntry`, `IdtPointer`, `ExceptionFrame` types and `unsafe load()`; 32 exception stubs (vectors 0–31) + generic IRQ stub (32–255) via `global_asm!`; `LIDT` loaded, interrupts remain disabled; verified active in QEMU serial output
-- Exception stubs upgraded — two `global_asm!` macro variants: `isr_stub` (no error code: RDI=vector, RSI=0, RDX=frame ptr) and `isr_stub_ec` (error code popped into RSI, RDX=frame ptr); `exception_handler()` prints vector name, error code (for vectors 8,10–14,17,21,29,30), faulting RIP+RFLAGS+RSP from the CPU-pushed `ExceptionFrame`, and CR2 for #PF (vector 14); boot verification passes
+- `kernel/src/arch/x86_64/idt.rs` added — 256-entry IDT with `IdtEntry`, `IdtPointer`, `ExceptionFrame` types and `unsafe load()`; 32 exception stubs (vectors 0-31) + generic IRQ stub (32-255) via `global_asm!`; `LIDT` loaded, interrupts remain disabled; verified active in QEMU serial output
+- Exception stubs upgraded — two `global_asm!` macro variants: `isr_stub` (no error code: RDI=vector, RSI=0, RDX=frame ptr) and `isr_stub_ec` (error code popped into RSI, RDX=frame ptr); `exception_handler()` prints vector name, error code (for vectors 8,10-14,17,21,29,30), faulting RIP+RFLAGS+RSP from the CPU-pushed `ExceptionFrame`, and CR2 for #PF (vector 14); boot verification passes
+- `MemoryMap`, `MemoryRegionKind`, `MemoryStats`, `ParseError` added to `ferrous-boot-info` — parses `KernelMemoryMap` from boot info, classifies UEFI memory types into kernel-relevant buckets, computes usable/reclaimable/total byte statistics; 45 host-side tests pass
+- `kernel/src/memory/mod.rs` added — global `MemoryMap` storage with `init()` / `get()` API backed by `MaybeUninit` + `AtomicBool`; Phase 1.3.2 physical allocator consumes this
+- `boot/src/main.rs` kernel_main Step 5 — prints full memory region table (base, end, size, type) and RAM summary to serial on every boot
 
 #### 1.2 - Runtime Setup
 
@@ -103,7 +106,7 @@ Every milestone must advance these core goals:
 
 | Task | Issue | Status |
 |------|-------|--------|
-| 1.3.1 Parse UEFI Memory Map | #10 | Not Started |
+| 1.3.1 Parse UEFI Memory Map | #10 | Complete (PR #64) |
 | 1.3.2 Physical Memory Allocator | #13 | Not Started |
 | 1.3.3 Virtual Memory Setup | #14 | Not Started |
 | 1.3.4 Page Table Management | #19 | Not Started |
@@ -131,45 +134,80 @@ Every milestone must advance these core goals:
 
 **Goal:** Implement fundamental kernel abstractions and user-space transition.
 
+### Architecture Decisions
+
+| ADR | Title | Status |
+|-----|-------|--------|
+| ADR-0002 | Process Model and Task Representation | Proposed |
+| ADR-0003 | Scheduler Algorithm Selection | Proposed |
+| ADR-0004 | Capability System Data Structures | Proposed |
+| ADR-0005 | IPC Mechanism Design | Proposed |
+
 ### Milestones
 
 #### 2.1 - Process Abstractions
-- [ ] Task/process structures
-- [ ] Address space management
-- [ ] ELF loader (basic)
-- [ ] User/kernel mode switching
-- [ ] System call interface (minimal)
+
+| Task | Issue | Status | Priority |
+|------|-------|--------|----------|
+| 2.1.1 Task and Process Data Structures | — | Not Started | Critical |
+| 2.1.2 Address Space Management | — | Not Started | Critical |
+| 2.1.3 ELF Binary Loader | — | Not Started | High |
+| 2.1.4 Kernel/User Mode Transition | — | Not Started | Critical |
+| 2.1.5 System Call Interface (minimal) | — | Not Started | Critical |
+
+**Dependencies:** Phase 1.3 (memory management) must be complete.
 
 #### 2.2 - Scheduler
-- [ ] Runnable task queue
-- [ ] Basic round-robin scheduler
-- [ ] Context switching (assembly + Rust)
-- [ ] Timer interrupts (PIT/APIC)
-- [ ] Idle task
+
+| Task | Issue | Status | Priority |
+|------|-------|--------|----------|
+| 2.2.1 Runnable Task Queue | — | Not Started | Critical |
+| 2.2.2 Basic Round-Robin Scheduler | — | Not Started | Critical |
+| 2.2.3 Context Switching (assembly + Rust) | — | Not Started | Critical |
+| 2.2.4 Timer Interrupts (PIT/APIC) | — | Not Started | High |
+| 2.2.5 Idle Task | — | Not Started | High |
+
+**Dependencies:** 2.1.1 (task structures) must be complete.
 
 #### 2.3 - Capability System Foundation
-- [ ] Capability data structures
-- [ ] Capability derivation rules
-- [ ] Capability-based syscalls (grant, revoke, derive)
-- [ ] Initial capability space for processes
+
+| Task | Issue | Status | Priority |
+|------|-------|--------|----------|
+| 2.3.1 Capability Data Structures | — | Not Started | Critical |
+| 2.3.2 Capability Derivation and Delegation | — | Not Started | Critical |
+| 2.3.3 Capability-Based Syscalls (grant, revoke, derive) | — | Not Started | High |
+| 2.3.4 Initial Capability Space for Processes | — | Not Started | High |
+
+**Dependencies:** 2.1.5 (syscall interface) must be complete.
 
 #### 2.4 - IPC Primitives
-- [ ] Message passing interface design
-- [ ] Synchronous send/receive
-- [ ] Message buffer management
-- [ ] Basic endpoint addressing
+
+| Task | Issue | Status | Priority |
+|------|-------|--------|----------|
+| 2.4.1 Endpoint and Channel Data Structures | — | Not Started | Critical |
+| 2.4.2 Synchronous Send/Receive | — | Not Started | Critical |
+| 2.4.3 Message Buffer Management | — | Not Started | High |
+| 2.4.4 IPC Capability Integration | — | Not Started | High |
+
+**Dependencies:** 2.2 (scheduler) and 2.3.1 (capability structures) must be complete.
 
 #### 2.5 - First User-Space Program
-- [ ] Minimal init process
-- [ ] Syscall: exit, yield, send, receive
-- [ ] Load and execute first userspace binary
+
+| Task | Issue | Status | Priority |
+|------|-------|--------|----------|
+| 2.5.1 Minimal Init Process | — | Not Started | Critical |
+| 2.5.2 Core Syscalls (exit, yield, send, receive) | — | Not Started | Critical |
+| 2.5.3 Load and Execute First Userspace Binary | — | Not Started | Critical |
+
+**Dependencies:** 2.1 through 2.4 must be complete.
 
 ### Success Criteria
 
-- Can load and run a simple userspace program
-- Program can send/receive messages via IPC
-- Scheduler switches between multiple tasks
-- Capabilities prevent unauthorized access
+- [ ] Can load and run a simple userspace program
+- [ ] Program can send/receive messages via IPC
+- [ ] Scheduler switches between multiple tasks
+- [ ] Capabilities prevent unauthorized access
+- [ ] Kernel remains stable when a user-space task crashes
 
 ---
 
