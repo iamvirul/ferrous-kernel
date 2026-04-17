@@ -1,8 +1,8 @@
 # Ferrous Kernel - Memory Management Architecture
 
-**Version:** 0.1  
-**Date:** 2026-01-04  
-**Status:** Design Phase (Phase 0)
+**Version:** 0.2
+**Date:** 2026-04-17
+**Status:** Phase 1 In Progress (1.3.1 complete, 1.3.2-1.3.5 pending)
 
 ---
 
@@ -564,30 +564,32 @@ pub enum MemoryError {
 
 ### Early Boot Sequence
 
-1. **Parse UEFI Memory Map**
-   - Identify usable memory regions
-   - Mark reserved regions (ACPI tables, bootloader data)
-   - Detect NUMA topology
+1. **Parse UEFI Memory Map** -- COMPLETE (Phase 1.3.1, PR #64)
+   - `MemoryMap::parse(&KernelMemoryMap)` validates and copies all descriptors
+   - `MemoryRegionKind` classifies each region: `Usable`, `BootloaderReclaimable`, `AcpiReclaimable`, `FirmwareRuntime`, `Mmio`, `Reserved`, etc.
+   - `MemoryStats` caches total/usable/reclaimable byte counts computed in one pass
+   - Global instance stored via `kernel::memory::init()` / `kernel::memory::get()` using `MaybeUninit` + `AtomicBool`
+   - Full region table printed to serial on every boot
 
-2. **Initialize Physical Frame Allocator**
-   - Build free frame list from memory map
-   - Reserve frames for kernel code/data
-   - Initialize per-NUMA-node allocators
+2. **Initialize Physical Frame Allocator** -- Phase 1.3.2 (pending)
+   - Build free frame bitmap from `memory::get().usable_regions()`
+   - Reserve frames for kernel code/data sections
+   - Initialize per-NUMA-node allocators (NUMA topology from ACPI SRAT, Phase 2+)
 
-3. **Set Up Kernel Page Tables**
+3. **Set Up Kernel Page Tables** -- Phase 1.3.3/1.3.4 (pending)
    - Identity map physical memory (temporary)
    - Map kernel code/data sections
    - Enable paging (CR0.PG = 1)
 
-4. **Switch to Higher-Half Kernel**
-   - Remap kernel to high virtual addresses
+4. **Switch to Higher-Half Kernel** -- Phase 1.3.3 (pending)
+   - Remap kernel to high virtual addresses (0xFFFF_8000_0000_0000+)
    - Remove low-memory identity mapping
    - Update all kernel pointers
 
-5. **Initialize Kernel Heap**
-   - Allocate initial heap frames
-   - Set up allocator data structures
-   - Enable global allocator
+5. **Initialize Kernel Heap** -- Phase 1.3.5 (pending)
+   - Allocate initial heap frames from physical allocator
+   - Set up linked-list allocator (Phase 1); migrate to buddy allocator (Phase 2)
+   - Enable `#[global_allocator]`
 
 ---
 
@@ -596,17 +598,21 @@ pub enum MemoryError {
 ### Phase 1: Foundation
 
 **Deliverables**:
-- Physical frame allocator (bitmap)
-- Basic page table management (4KB pages only)
-- Kernel heap allocator (simple linked list)
-- Address space creation/destruction
-- Higher-half kernel setup
+
+| Task | Status | Notes |
+|------|--------|-------|
+| UEFI memory map parsing | Complete (PR #64) | `MemoryMap`, `MemoryRegionKind`, `MemoryStats` in `ferrous-boot-info`; global storage in `kernel::memory` |
+| Physical frame allocator (bitmap) | Pending (1.3.2) | Consumes `memory::get().usable_regions()` |
+| Basic page table management (4 KB pages) | Pending (1.3.3/1.3.4) | x86-64 4-level PT; identity map then higher-half switch |
+| Kernel heap allocator (linked list) | Pending (1.3.5) | Implements `GlobalAlloc`; migrate to buddy in Phase 2 |
+| Higher-half kernel address space | Pending (1.3.3) | Kernel at 0xFFFF_8000_0000_0000+ |
 
 **Success Criteria**:
-- Kernel can allocate/free physical frames
-- Kernel can create page tables and map pages
-- Kernel heap allocation works
-- Boot completes with paging enabled
+- [x] UEFI memory map parsed, classified, and accessible to all kernel subsystems
+- [ ] Kernel can allocate and free physical frames
+- [ ] Kernel can create page tables and map pages
+- [ ] Kernel heap allocation works (`Box`, `Vec` available)
+- [ ] Boot completes with paging enabled
 
 ### Phase 2: Process Memory
 
