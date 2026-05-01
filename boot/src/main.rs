@@ -28,7 +28,7 @@ use uefi::prelude::*;
 use crate::boot_info::BootInfo;
 use crate::console::Console;
 use crate::memory::MemoryMap;
-use ferrous_boot_info::KernelBootInfo;
+use ferrous_boot_info::{BitmapFrameAllocator, KernelBootInfo, KERNEL_BITMAP_WORDS};
 
 // ---------------------------------------------------------------------------
 // Bootstrap stack
@@ -100,6 +100,22 @@ static mut KERNEL_STACK: KernelStack = KernelStack([0u8; KERNEL_STACK_SIZE]);
 /// treated as read-only by both the bootloader (during the jump) and
 /// the kernel.
 static mut KERNEL_BOOT_INFO: KernelBootInfo = KernelBootInfo::new();
+
+// ---------------------------------------------------------------------------
+// Physical frame allocator (Phase 1.3.2)
+// ---------------------------------------------------------------------------
+
+/// Global physical frame allocator for Phase 1.
+///
+/// Stores a bitmap tracking usable physical frames. The bitmap is 2 MiB and
+/// lives in BSS (zero-initialised, no binary bloat). Initialised in
+/// `kernel_main` Step 6 from the parsed `MemoryMap`.
+///
+/// SAFETY: mutated only inside `kernel_main` (single-threaded, interrupts
+/// disabled). After init, `free_frames()` and `allocate()` are called before
+/// the allocator static is returned from `kernel_main`.
+#[allow(static_mut_refs)]
+static mut FRAME_ALLOC: BitmapFrameAllocator<KERNEL_BITMAP_WORDS> = BitmapFrameAllocator::new();
 
 // ---------------------------------------------------------------------------
 // Panic handler
@@ -470,6 +486,131 @@ fn kernel_main(boot_info: &KernelBootInfo) -> ! {
     // type (Phase 1.3.1) lives in ferrous-boot-info and is accessible via
     // kernel::memory after the kernel binary is separated in Phase 2.
     print_memory_map(&boot_info.memory_map);
+
+    // -----------------------------------------------------------------------
+    // Step 6: Initialise the physical frame allocator (Phase 1.3.2).
+    //
+    // Parse the memory map into the kernel's MemoryMap type, then initialise
+    // the bitmap allocator from it.  Only immediately-usable (conventional)
+    // regions are marked free; bootloader and ACPI reclaimable regions remain
+    // reserved until a future reclamation pass (Phase 2+).
+    //
+    // We exercise the allocator with a small test sequence to prove it works:
+    //   1. Allocate 3 frames and verify distinct, page-aligned addresses.
+    //   2. Deallocate all 3 frames and confirm the free count recovers.
+    //
+    // SAFETY: single-threaded, interrupts disabled; FRAME_ALLOC is not yet
+    // initialised (total_frames == 0); no other code touches it.
+    let parsed_map = ferrous_boot_info::MemoryMap::parse(&boot_info.memory_map);
+    match parsed_map {
+        Err(_) => {
+            serial_write_str("[WARN] Frame allocator: memory map parse failed — skipping init\r\n");
+        }
+        Ok(map) => {
+            // Initialise the allocator in-place in the global static (BSS).
+            // SAFETY: FRAME_ALLOC starts all-zero (BSS), single-threaded,
+            // interrupts disabled, init called exactly once.
+            #[allow(static_mut_refs)]
+            unsafe {
+                FRAME_ALLOC.init_from_memory_map(&map);
+            }
+
+            let free = unsafe {
+                #[allow(static_mut_refs)]
+                FRAME_ALLOC.free_frames()
+            };
+            let total = unsafe {
+                #[allow(static_mut_refs)]
+                FRAME_ALLOC.total_frames()
+            };
+
+            serial_write_str("[OK] Frame allocator initialised\r\n");
+            serial_write_str("[INFO] Physical frames: ");
+            serial_write_usize(free);
+            serial_write_str(" free / ");
+            serial_write_usize(total);
+            serial_write_str(" addressable (");
+            serial_write_usize(free * 4);
+            serial_write_str(" KiB usable)\r\n");
+
+            // --- Allocator smoke test ---
+            //
+            // Allocate 3 frames; print their addresses; deallocate; verify
+            // the free count returns to the original value.
+            serial_write_str("[TEST] Allocating 3 frames...\r\n");
+            let f0 = unsafe {
+                #[allow(static_mut_refs)]
+                FRAME_ALLOC.allocate()
+            };
+            let f1 = unsafe {
+                #[allow(static_mut_refs)]
+                FRAME_ALLOC.allocate()
+            };
+            let f2 = unsafe {
+                #[allow(static_mut_refs)]
+                FRAME_ALLOC.allocate()
+            };
+
+            match (f0, f1, f2) {
+                (Some(a), Some(b), Some(c)) => {
+                    serial_write_str("[OK]   frame[0] = 0x");
+                    serial_write_usize_hex(a.start_address() as usize);
+                    serial_write_str("\r\n");
+                    serial_write_str("[OK]   frame[1] = 0x");
+                    serial_write_usize_hex(b.start_address() as usize);
+                    serial_write_str("\r\n");
+                    serial_write_str("[OK]   frame[2] = 0x");
+                    serial_write_usize_hex(c.start_address() as usize);
+                    serial_write_str("\r\n");
+
+                    // Verify all three are distinct.
+                    if a == b || b == c || a == c {
+                        serial_write_str("[FAIL] Allocator returned duplicate frames!\r\n");
+                    } else {
+                        serial_write_str("[OK]   All frames are distinct\r\n");
+                    }
+
+                    // Verify page alignment.
+                    let aligned = a.start_address() % 4096 == 0
+                        && b.start_address() % 4096 == 0
+                        && c.start_address() % 4096 == 0;
+                    if aligned {
+                        serial_write_str("[OK]   All frames are 4 KiB aligned\r\n");
+                    } else {
+                        serial_write_str("[FAIL] Frame address is not page-aligned!\r\n");
+                    }
+
+                    // Return all three frames and verify count recovers.
+                    let free_before_dealloc = unsafe {
+                        #[allow(static_mut_refs)]
+                        FRAME_ALLOC.free_frames()
+                    };
+                    unsafe {
+                        #[allow(static_mut_refs)]
+                        FRAME_ALLOC.deallocate(a);
+                        #[allow(static_mut_refs)]
+                        FRAME_ALLOC.deallocate(b);
+                        #[allow(static_mut_refs)]
+                        FRAME_ALLOC.deallocate(c);
+                    }
+                    let free_after_dealloc = unsafe {
+                        #[allow(static_mut_refs)]
+                        FRAME_ALLOC.free_frames()
+                    };
+                    if free_after_dealloc == free_before_dealloc + 3 {
+                        serial_write_str("[OK]   Deallocation restored free count (+3)\r\n");
+                    } else {
+                        serial_write_str("[FAIL] Free count after dealloc is wrong!\r\n");
+                    }
+                }
+                _ => {
+                    serial_write_str(
+                        "[WARN] Fewer than 3 usable frames available — smoke test skipped\r\n",
+                    );
+                }
+            }
+        }
+    }
 
     if boot_info.acpi_rsdp != 0 {
         serial_write_str("[INFO] ACPI RSDP: 0x");
