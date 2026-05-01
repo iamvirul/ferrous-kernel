@@ -496,6 +496,359 @@ impl MemoryMap {
 }
 
 // ---------------------------------------------------------------------------
+// Physical frame tracking and bitmap allocator
+//
+// These types live here (rather than in the kernel crate) because they
+// operate purely on `MemoryMap` data and can be unit-tested on the host
+// without targeting x86_64-unknown-none. The kernel's
+// `memory::frame_allocator` module adds global static storage on top of
+// these types.
+//
+// Migration note: will move to `lib/memory` once the kernel crate has its
+// own test infrastructure (Phase 2+).
+// ---------------------------------------------------------------------------
+
+/// Physical page size on x86_64: 4 KiB.
+pub const PAGE_SIZE: u64 = 4096;
+
+/// Number of `u64` words in the kernel's physical frame allocator bitmap.
+///
+/// Each word tracks 64 frames (4 KiB each), so this value supports up to
+/// `KERNEL_BITMAP_WORDS * 64 * 4096` bytes of physical RAM = 64 GiB.
+///
+/// The bitmap lives in kernel BSS (zero-initialised); it does not bloat the
+/// kernel binary image. Increase if the target system exceeds 64 GiB.
+pub const KERNEL_BITMAP_WORDS: usize = 262_144; // 64 GiB / 4 KiB / 64
+
+/// A physical memory frame handle.
+///
+/// Wraps a physical frame number (PFN): `start_address == pfn * PAGE_SIZE`.
+///
+/// # Phase 1 note
+///
+/// This type is [`Copy`] in Phase 1 because there is no `Drop` implementation
+/// for automatic deallocation — callers explicitly invoke
+/// `frame_allocator::deallocate()`. Phase 2 will introduce RAII deallocation
+/// and remove `Copy` to enforce unique ownership.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct PhysFrame(u64);
+
+impl PhysFrame {
+    /// Construct a frame handle from a page-aligned physical address.
+    ///
+    /// Returns `None` if `phys_addr` is not [`PAGE_SIZE`]-aligned.
+    #[inline]
+    pub fn from_addr(phys_addr: u64) -> Option<Self> {
+        if phys_addr % PAGE_SIZE == 0 {
+            Some(Self(phys_addr / PAGE_SIZE))
+        } else {
+            None
+        }
+    }
+
+    /// Construct a frame handle directly from a physical frame number (PFN).
+    ///
+    /// # Safety
+    ///
+    /// The caller is responsible for ensuring `pfn` corresponds to a valid,
+    /// allocated physical frame. This constructor is intended for use inside
+    /// the frame allocator only.
+    #[doc(hidden)]
+    #[inline]
+    pub fn from_pfn(pfn: u64) -> Self {
+        Self(pfn)
+    }
+
+    /// Returns the physical frame number (PFN).
+    #[inline]
+    pub fn pfn(self) -> u64 {
+        self.0
+    }
+
+    /// Returns the physical start address of this frame.
+    #[inline]
+    pub fn start_address(self) -> u64 {
+        self.0 * PAGE_SIZE
+    }
+
+    /// Returns the physical end address (exclusive) of this frame.
+    #[inline]
+    pub fn end_address(self) -> u64 {
+        (self.0 + 1) * PAGE_SIZE
+    }
+}
+
+/// Bitmap physical frame allocator.
+///
+/// Tracks physical frame availability using a fixed-size bitmap. Each bit
+/// represents one 4 KiB physical page frame:
+///
+/// - **bit = 1**: frame is free and available for allocation.
+/// - **bit = 0**: frame is reserved, allocated, or outside usable RAM.
+///
+/// The all-zeros initial state (matching BSS zero-initialisation) means
+/// "all frames reserved", which is the safe starting point:
+/// [`init_from_memory_map`][Self::init_from_memory_map] explicitly marks
+/// usable regions free before any allocation can occur.
+///
+/// # Generic parameter
+///
+/// `WORDS` is the number of `u64` bitmap words, controlling the maximum
+/// number of physical frames tracked (`WORDS * 64`). Use
+/// [`KERNEL_BITMAP_WORDS`] for the production kernel instance.
+///
+/// # Threading model
+///
+/// The allocator contains **no internal synchronisation**. In Phase 1 the
+/// kernel runs single-core with interrupts disabled during allocation. Callers
+/// are responsible for ensuring mutual exclusion. Phase 2 will wrap this type
+/// in a spinlock.
+pub struct BitmapFrameAllocator<const WORDS: usize> {
+    /// Bitmap: each bit represents one frame.
+    /// 1 = free (available), 0 = allocated or reserved.
+    bitmap: [u64; WORDS],
+    /// Total frames this allocator can address (`WORDS * 64`).
+    /// Set by `init_from_memory_map`; 0 before initialisation.
+    total_frames: usize,
+    /// Count of frames with bit = 1 (free). Maintained incrementally to
+    /// avoid a full bitmap scan on every allocation.
+    free_frames: usize,
+    /// Word-index hint for the next allocation search.
+    /// Reduces average scan cost by skipping already-exhausted words.
+    next_hint: usize,
+}
+
+impl<const WORDS: usize> core::fmt::Debug for BitmapFrameAllocator<WORDS> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("BitmapFrameAllocator")
+            .field("bitmap_words", &WORDS)
+            .field("total_frames", &self.total_frames)
+            .field("free_frames", &self.free_frames)
+            .field("allocated_frames", &self.allocated_frames())
+            .finish()
+    }
+}
+
+impl<const WORDS: usize> BitmapFrameAllocator<WORDS> {
+    // -----------------------------------------------------------------------
+    // Construction
+    // -----------------------------------------------------------------------
+
+    /// Creates a new allocator in the "all reserved" state.
+    ///
+    /// The bitmap is entirely zero (all frames reserved). Call
+    /// [`init_from_memory_map`][Self::init_from_memory_map] before making
+    /// any allocations.
+    ///
+    /// This function is `const` so it can be used in static initialisers.
+    /// The resulting all-zero layout matches BSS zero-initialisation, meaning
+    /// `static mut ALLOC: BitmapFrameAllocator<N> = BitmapFrameAllocator::new()`
+    /// does not bloat the binary image.
+    pub const fn new() -> Self {
+        Self {
+            bitmap: [0u64; WORDS],
+            total_frames: 0,
+            free_frames: 0,
+            next_hint: 0,
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Initialisation
+    // -----------------------------------------------------------------------
+
+    /// Initialise the allocator from a parsed memory map.
+    ///
+    /// Marks all **immediately-usable** (conventional) memory regions as free.
+    /// Reclaimable regions (bootloader, ACPI) remain reserved and will be
+    /// reclaimed in a later pass (Phase 2+).
+    ///
+    /// `total_frames` is set to `WORDS * 64` regardless of how much physical
+    /// RAM exists; frames beyond the last usable region remain 0 (reserved)
+    /// and are never returned by [`allocate`][Self::allocate].
+    ///
+    /// # Panics (debug builds only)
+    ///
+    /// Asserts that `total_frames == 0` before initialisation to catch
+    /// double-init bugs.
+    pub fn init_from_memory_map(&mut self, map: &MemoryMap) {
+        debug_assert_eq!(
+            self.total_frames, 0,
+            "init_from_memory_map() called more than once"
+        );
+
+        self.total_frames = WORDS * 64;
+
+        // Mark all immediately-usable (conventional) regions as free.
+        for region in map.usable_regions() {
+            let start_pfn = (region.phys_start / PAGE_SIZE) as usize;
+            let end_pfn = start_pfn + region.page_count as usize;
+            self.set_range_free(start_pfn, end_pfn);
+        }
+
+        // Derive free_frames by counting set bits (one accurate pass at init).
+        self.free_frames = self.count_free_in_bitmap();
+        self.next_hint = 0;
+    }
+
+    /// Marks all frames in the physical range `[phys_start, phys_start + size_bytes)`
+    /// as reserved (unavailable for allocation).
+    ///
+    /// Useful for protecting the kernel image, ACPI tables, or device memory
+    /// after `init_from_memory_map` has run. Frames are page-aligned outward.
+    /// Frames already reserved are left unchanged.
+    pub fn mark_reserved(&mut self, phys_start: u64, size_bytes: u64) {
+        if size_bytes == 0 {
+            return;
+        }
+        let start_pfn = (phys_start / PAGE_SIZE) as usize;
+        // Round up to next page boundary.
+        let end_pfn = ((phys_start + size_bytes + PAGE_SIZE - 1) / PAGE_SIZE) as usize;
+
+        for pfn in start_pfn..end_pfn {
+            let word = pfn / 64;
+            let bit = pfn % 64;
+            if word < WORDS {
+                let mask = 1u64 << bit;
+                if self.bitmap[word] & mask != 0 {
+                    // Frame was free — removing it from the pool.
+                    self.bitmap[word] &= !mask;
+                    self.free_frames = self.free_frames.saturating_sub(1);
+                }
+            }
+        }
+
+        // Rewind hint in case we just reserved frames before it.
+        let hint_candidate = start_pfn / 64;
+        if hint_candidate < self.next_hint {
+            self.next_hint = hint_candidate;
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Allocation / deallocation
+    // -----------------------------------------------------------------------
+
+    /// Allocates a single physical frame using a first-fit strategy.
+    ///
+    /// The search begins at [`next_hint`] (the word containing the last
+    /// allocation) and wraps around if needed, so sequential allocations are
+    /// O(1) amortised.
+    ///
+    /// Returns `None` if no free frames are available.
+    pub fn allocate(&mut self) -> Option<PhysFrame> {
+        if self.free_frames == 0 {
+            return None;
+        }
+
+        // Search from hint; wrap to 0 if needed.
+        let pfn = self.find_free_from(self.next_hint).or_else(|| {
+            if self.next_hint > 0 {
+                self.find_free_from(0)
+            } else {
+                None
+            }
+        })?;
+
+        // Mark the frame allocated (clear bit).
+        let word = pfn / 64;
+        let bit = pfn % 64;
+        self.bitmap[word] &= !(1u64 << bit);
+        self.free_frames -= 1;
+        self.next_hint = word;
+
+        Some(PhysFrame::from_pfn(pfn as u64))
+    }
+
+    /// Returns a physical frame to the free pool.
+    ///
+    /// # Panics (debug builds only)
+    ///
+    /// Panics if:
+    /// - The frame's PFN is outside the allocator's addressable range.
+    /// - The frame's bit is already set (double-free detection).
+    pub fn deallocate(&mut self, frame: PhysFrame) {
+        let pfn = frame.pfn() as usize;
+        let word = pfn / 64;
+        let bit = pfn % 64;
+        debug_assert!(
+            word < WORDS,
+            "deallocate: PhysFrame pfn={} is outside allocator range (max {})",
+            pfn,
+            WORDS * 64
+        );
+        debug_assert!(
+            self.bitmap[word] & (1u64 << bit) == 0,
+            "deallocate: double-free detected for PhysFrame pfn={}",
+            pfn
+        );
+        self.bitmap[word] |= 1u64 << bit;
+        self.free_frames += 1;
+        // Allow the next allocation to reuse this frame quickly.
+        if word < self.next_hint {
+            self.next_hint = word;
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Statistics
+    // -----------------------------------------------------------------------
+
+    /// Returns the number of frames currently available for allocation.
+    #[inline]
+    pub fn free_frames(&self) -> usize {
+        self.free_frames
+    }
+
+    /// Returns the total number of frames this allocator can address
+    /// (`WORDS * 64`), regardless of how many are free or usable.
+    #[inline]
+    pub fn total_frames(&self) -> usize {
+        self.total_frames
+    }
+
+    /// Returns the number of allocated frames (`total - free`).
+    #[inline]
+    pub fn allocated_frames(&self) -> usize {
+        self.total_frames.saturating_sub(self.free_frames)
+    }
+
+    // -----------------------------------------------------------------------
+    // Private helpers
+    // -----------------------------------------------------------------------
+
+    /// Sets all frames in `[start_pfn, end_pfn)` as free (bit = 1).
+    /// Frames beyond `WORDS * 64` are silently ignored.
+    fn set_range_free(&mut self, start_pfn: usize, end_pfn: usize) {
+        for pfn in start_pfn..end_pfn {
+            let word = pfn / 64;
+            let bit = pfn % 64;
+            if word < WORDS {
+                self.bitmap[word] |= 1u64 << bit;
+            }
+        }
+    }
+
+    /// Returns the PFN of the first free frame at or after `start_word`.
+    fn find_free_from(&self, start_word: usize) -> Option<usize> {
+        for (offset, &word) in self.bitmap[start_word..].iter().enumerate() {
+            if word != 0 {
+                // `trailing_zeros` gives the position of the lowest set bit.
+                let bit = word.trailing_zeros() as usize;
+                return Some((start_word + offset) * 64 + bit);
+            }
+        }
+        None
+    }
+
+    /// Counts free frames by scanning the full bitmap (O(WORDS)).
+    /// Used once at init to establish the initial `free_frames` count.
+    fn count_free_in_bitmap(&self) -> usize {
+        self.bitmap.iter().map(|w| w.count_ones() as usize).sum()
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 //
 // Even though this crate is #![no_std], cargo test links std for the test
@@ -1055,5 +1408,300 @@ mod tests {
     fn kernel_framebuffer_size() {
         // 8 (base) + 8 (size) + 4 (width) + 4 (height) + 4 (stride) + 4 (pixel_format) = 32
         assert_eq!(core::mem::size_of::<KernelFramebuffer>(), 32);
+    }
+
+    // -----------------------------------------------------------------------
+    // PhysFrame
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn phys_frame_from_aligned_addr() {
+        let frame = PhysFrame::from_addr(0x1000).expect("0x1000 is page-aligned");
+        assert_eq!(frame.pfn(), 1);
+        assert_eq!(frame.start_address(), 0x1000);
+        assert_eq!(frame.end_address(), 0x2000);
+    }
+
+    #[test]
+    fn phys_frame_from_zero_addr() {
+        let frame = PhysFrame::from_addr(0).expect("0 is page-aligned");
+        assert_eq!(frame.pfn(), 0);
+        assert_eq!(frame.start_address(), 0);
+    }
+
+    #[test]
+    fn phys_frame_from_unaligned_addr_returns_none() {
+        assert!(PhysFrame::from_addr(0x1001).is_none());
+        assert!(PhysFrame::from_addr(1).is_none());
+        assert!(PhysFrame::from_addr(4095).is_none());
+    }
+
+    #[test]
+    fn phys_frame_ordering() {
+        let a = PhysFrame::from_addr(0x1000).unwrap();
+        let b = PhysFrame::from_addr(0x2000).unwrap();
+        assert!(a < b);
+    }
+
+    // -----------------------------------------------------------------------
+    // BitmapFrameAllocator — construction and initial state
+    // -----------------------------------------------------------------------
+
+    /// Small bitmap (32 words = 2048 frames = 8 MiB) used in tests.
+    type TestAlloc = BitmapFrameAllocator<32>;
+
+    fn make_allocator_with_map(descs: &[(u32, u64, u64)]) -> (TestAlloc, MemoryMap) {
+        let raw_descs: std::vec::Vec<KernelMemoryDescriptor> = descs
+            .iter()
+            .map(|(ty, base, pages)| make_desc(*ty, *base, *pages))
+            .collect();
+        let raw_map = make_map(&raw_descs);
+        let parsed = MemoryMap::parse(&raw_map).unwrap();
+        let mut alloc = TestAlloc::new();
+        alloc.init_from_memory_map(&parsed);
+        (alloc, parsed)
+    }
+
+    #[test]
+    fn new_allocator_has_zero_free_frames() {
+        let alloc = TestAlloc::new();
+        assert_eq!(alloc.free_frames(), 0);
+        assert_eq!(alloc.total_frames(), 0);
+        assert_eq!(alloc.allocated_frames(), 0);
+    }
+
+    #[test]
+    fn init_sets_total_frames_to_words_times_64() {
+        let (alloc, _) = make_allocator_with_map(&[(memory_type::CONVENTIONAL, 0x1000, 10)]);
+        assert_eq!(alloc.total_frames(), 32 * 64);
+    }
+
+    #[test]
+    fn init_marks_conventional_frames_free() {
+        // 10 conventional pages at 0x1000 → 10 free frames.
+        let (alloc, _) = make_allocator_with_map(&[(memory_type::CONVENTIONAL, 0x1000, 10)]);
+        assert_eq!(alloc.free_frames(), 10);
+    }
+
+    #[test]
+    fn init_does_not_free_reclaimable_frames() {
+        // BootloaderReclaimable — not immediately available in Phase 1.
+        let (alloc, _) = make_allocator_with_map(&[(memory_type::BOOT_SERVICES_DATA, 0x1000, 10)]);
+        assert_eq!(alloc.free_frames(), 0);
+    }
+
+    #[test]
+    fn init_does_not_free_reserved_frames() {
+        let (alloc, _) = make_allocator_with_map(&[
+            (memory_type::RESERVED, 0x1000, 5),
+            (memory_type::MMIO, 0x10_0000, 8),
+        ]);
+        assert_eq!(alloc.free_frames(), 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // BitmapFrameAllocator — allocation
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn allocate_returns_some_when_frames_available() {
+        let (mut alloc, _) = make_allocator_with_map(&[(memory_type::CONVENTIONAL, 0x1000, 4)]);
+        assert!(alloc.allocate().is_some());
+    }
+
+    #[test]
+    fn allocate_returns_page_aligned_address() {
+        let (mut alloc, _) = make_allocator_with_map(&[(memory_type::CONVENTIONAL, 0x1000, 4)]);
+        let frame = alloc.allocate().unwrap();
+        assert_eq!(
+            frame.start_address() % PAGE_SIZE,
+            0,
+            "start_address must be page-aligned"
+        );
+    }
+
+    #[test]
+    fn allocate_decrements_free_count() {
+        let (mut alloc, _) = make_allocator_with_map(&[(memory_type::CONVENTIONAL, 0x1000, 4)]);
+        let before = alloc.free_frames();
+        alloc.allocate().unwrap();
+        assert_eq!(alloc.free_frames(), before - 1);
+    }
+
+    #[test]
+    fn allocate_returns_distinct_frames() {
+        let (mut alloc, _) = make_allocator_with_map(&[(memory_type::CONVENTIONAL, 0x1000, 4)]);
+        let f1 = alloc.allocate().unwrap();
+        let f2 = alloc.allocate().unwrap();
+        assert_ne!(
+            f1, f2,
+            "consecutive allocations must return different frames"
+        );
+    }
+
+    #[test]
+    fn allocate_exhausted_returns_none() {
+        let (mut alloc, _) = make_allocator_with_map(&[
+            (memory_type::CONVENTIONAL, 0x1000, 3), // exactly 3 frames
+        ]);
+        alloc.allocate().unwrap();
+        alloc.allocate().unwrap();
+        alloc.allocate().unwrap();
+        assert_eq!(alloc.free_frames(), 0);
+        assert!(
+            alloc.allocate().is_none(),
+            "must return None when no frames remain"
+        );
+    }
+
+    #[test]
+    fn allocate_frame_is_within_usable_region() {
+        // 4 pages at 0x2000: PFNs 2, 3, 4, 5.
+        let (mut alloc, _) = make_allocator_with_map(&[(memory_type::CONVENTIONAL, 0x2000, 4)]);
+        for _ in 0..4 {
+            let frame = alloc.allocate().unwrap();
+            let addr = frame.start_address();
+            assert!(
+                addr >= 0x2000 && addr < 0x6000,
+                "frame address {:#x} outside usable region [0x2000, 0x6000)",
+                addr
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // BitmapFrameAllocator — deallocation
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn deallocate_increments_free_count() {
+        let (mut alloc, _) = make_allocator_with_map(&[(memory_type::CONVENTIONAL, 0x1000, 4)]);
+        let frame = alloc.allocate().unwrap();
+        let before = alloc.free_frames();
+        alloc.deallocate(frame);
+        assert_eq!(alloc.free_frames(), before + 1);
+    }
+
+    #[test]
+    fn deallocate_allows_reallocation_of_same_frame() {
+        let (mut alloc, _) = make_allocator_with_map(&[
+            (memory_type::CONVENTIONAL, 0x1000, 1), // only one frame
+        ]);
+        let frame1 = alloc.allocate().unwrap();
+        assert!(alloc.allocate().is_none()); // exhausted
+
+        alloc.deallocate(frame1);
+        let frame2 = alloc.allocate();
+        assert!(
+            frame2.is_some(),
+            "frame must be re-allocatable after deallocation"
+        );
+    }
+
+    #[test]
+    fn deallocate_and_reallocate_full_cycle() {
+        let (mut alloc, _) = make_allocator_with_map(&[(memory_type::CONVENTIONAL, 0x1000, 4)]);
+        let frames: std::vec::Vec<_> = (0..4).map(|_| alloc.allocate().unwrap()).collect();
+        assert_eq!(alloc.free_frames(), 0);
+        for f in frames {
+            alloc.deallocate(f);
+        }
+        assert_eq!(alloc.free_frames(), 4);
+    }
+
+    // -----------------------------------------------------------------------
+    // BitmapFrameAllocator — mark_reserved
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn mark_reserved_reduces_free_count() {
+        let (mut alloc, _) = make_allocator_with_map(&[
+            (memory_type::CONVENTIONAL, 0x1000, 4), // 4 free frames
+        ]);
+        let before = alloc.free_frames();
+        // Reserve 2 pages starting at 0x2000 (PFNs 2 and 3).
+        alloc.mark_reserved(0x2000, 2 * PAGE_SIZE);
+        assert_eq!(alloc.free_frames(), before - 2);
+    }
+
+    #[test]
+    fn mark_reserved_prevents_allocation_in_range() {
+        // 4 pages at PFNs 1..=4 (addresses 0x1000..0x5000).
+        let (mut alloc, _) = make_allocator_with_map(&[(memory_type::CONVENTIONAL, 0x1000, 4)]);
+        // Reserve PFNs 2 and 3 (0x2000 and 0x3000).
+        alloc.mark_reserved(0x2000, 2 * PAGE_SIZE);
+
+        let mut returned_addrs = std::vec::Vec::new();
+        while let Some(frame) = alloc.allocate() {
+            returned_addrs.push(frame.start_address());
+        }
+        assert!(
+            !returned_addrs.contains(&0x2000),
+            "0x2000 was reserved but returned by allocator"
+        );
+        assert!(
+            !returned_addrs.contains(&0x3000),
+            "0x3000 was reserved but returned by allocator"
+        );
+    }
+
+    #[test]
+    fn mark_reserved_idempotent_on_already_reserved_frames() {
+        let (mut alloc, _) = make_allocator_with_map(&[(memory_type::CONVENTIONAL, 0x1000, 4)]);
+        let before = alloc.free_frames();
+        // Reserve a region twice — count should only drop once.
+        alloc.mark_reserved(0x1000, PAGE_SIZE);
+        let after_first = alloc.free_frames();
+        alloc.mark_reserved(0x1000, PAGE_SIZE);
+        assert_eq!(
+            alloc.free_frames(),
+            after_first,
+            "marking an already-reserved frame must not double-decrement free_frames"
+        );
+        assert_eq!(after_first, before - 1);
+    }
+
+    #[test]
+    fn mark_reserved_zero_size_is_noop() {
+        let (mut alloc, _) = make_allocator_with_map(&[(memory_type::CONVENTIONAL, 0x1000, 4)]);
+        let before = alloc.free_frames();
+        alloc.mark_reserved(0x1000, 0);
+        assert_eq!(alloc.free_frames(), before);
+    }
+
+    // -----------------------------------------------------------------------
+    // BitmapFrameAllocator — multiple regions
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn init_with_multiple_conventional_regions() {
+        let (alloc, _) = make_allocator_with_map(&[
+            (memory_type::CONVENTIONAL, 0x1000, 3),
+            (memory_type::RESERVED, 0x10_0000, 10), // skipped
+            (memory_type::CONVENTIONAL, 0x20_0000, 5),
+        ]);
+        assert_eq!(alloc.free_frames(), 8); // 3 + 5
+    }
+
+    #[test]
+    fn allocated_frames_stat_is_consistent() {
+        let (mut alloc, _) = make_allocator_with_map(&[(memory_type::CONVENTIONAL, 0x1000, 4)]);
+        alloc.allocate().unwrap();
+        alloc.allocate().unwrap();
+        assert_eq!(
+            alloc.free_frames() + alloc.allocated_frames(),
+            alloc.total_frames()
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // BitmapFrameAllocator — KERNEL_BITMAP_WORDS constant
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn kernel_bitmap_words_covers_64_gib() {
+        // KERNEL_BITMAP_WORDS * 64 frames * 4 KiB/frame == 64 GiB
+        let max_bytes: u64 = KERNEL_BITMAP_WORDS as u64 * 64 * PAGE_SIZE;
+        assert_eq!(max_bytes, 64 * 1024 * 1024 * 1024);
     }
 }
