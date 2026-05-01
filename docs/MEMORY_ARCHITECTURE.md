@@ -1,8 +1,8 @@
 # Ferrous Kernel - Memory Management Architecture
 
-**Version:** 0.2
-**Date:** 2026-04-17
-**Status:** Phase 1 In Progress (1.3.1 complete, 1.3.2-1.3.5 pending)
+**Version:** 0.3
+**Date:** 2026-05-01
+**Status:** Phase 1 In Progress (1.3.1 and 1.3.2 complete, 1.3.3-1.3.5 pending)
 
 ---
 
@@ -64,82 +64,88 @@ Ferrous uses a **higher-half kernel** design with separate kernel and user addre
 
 ### Physical Memory
 
-#### PhysicalFrame
+#### PhysFrame
 
-A physical memory frame (4KB page on x86_64). Physical frames are allocated from a global frame allocator.
+A physical memory frame handle (4 KiB page on x86_64), implemented in `ferrous-boot-info` so it can be unit-tested on the host.
 
 **Key Properties**:
-- Owned type (RAII) - automatically freed when dropped
-- Cannot be cloned or copied (unique ownership)
-- Frame number (PFN) is the identifier
-- All frame operations are unsafe (raw pointer manipulation)
+- Wraps a physical frame number (PFN): `start_address == pfn * 4096`
+- `Copy` in Phase 1 — no `Drop`/RAII because implementing `Drop` with automatic deallocation would create a circular dependency (`ferrous-boot-info` cannot call into `kernel`). Phase 2 will remove `Copy` and add `Drop`-based deallocation once the kernel crate has its own test infrastructure.
+- Constructors validate alignment; `from_pfn` is `#[doc(hidden)]` (allocator-internal use only)
 
-**Rust Interface (conceptual)**:
+**Actual API** (`ferrous-boot-info::PhysFrame`):
 ```rust
-pub struct PhysicalFrame {
-    pfn: PhysicalFrameNumber,
-    // ...
-}
+pub const PAGE_SIZE: u64 = 4096;
 
-impl PhysicalFrame {
-    /// Allocate a new physical frame
-    pub fn allocate() -> Option<Self> { /* ... */ }
-    
-    /// Get the frame number
-    pub fn pfn(&self) -> PhysicalFrameNumber { /* ... */ }
-    
-    /// Get physical address
-    pub fn start_address(&self) -> PhysicalAddress { /* ... */ }
-}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct PhysFrame(u64); // inner = PFN
 
-// Automatic deallocation via Drop trait
-impl Drop for PhysicalFrame {
-    fn drop(&mut self) {
-        // Return frame to allocator
-    }
+impl PhysFrame {
+    pub fn from_addr(phys_addr: u64) -> Option<Self>; // None if not 4 KiB aligned
+    pub fn pfn(self) -> u64;
+    pub fn start_address(self) -> u64; // pfn * PAGE_SIZE
+    pub fn end_address(self) -> u64;   // (pfn + 1) * PAGE_SIZE
 }
 ```
 
-#### PhysicalFrameAllocator
+#### BitmapFrameAllocator
 
-Manages allocation and deallocation of physical frames.
+Phase 1 physical frame allocator. Tracks frame availability with a fixed-size bitmap stored entirely in BSS.
 
-**Allocation Strategy Options**:
-- **Buddy Allocator**: Good for power-of-2 allocations, moderate fragmentation
-- **Bitmap Allocator**: Simple, predictable, good for small systems
-- **Slab Allocator**: Efficient for fixed-size allocations
+**Design decisions**:
+- **Bitmap allocator** chosen for Phase 1: simple, predictable, O(WORDS) worst-case, O(1) amortised with hint
+- **Bit 1 = free, bit 0 = reserved/allocated** — BSS zero-init safely means "all frames reserved" before `init_from_memory_map` runs
+- **`const fn new()` returns all-zeros** — 2 MiB static lands in BSS, not the data segment; zero binary bloat
+- **Const-generic `WORDS`** — small test instances in `ferrous-boot-info` unit tests; 2 MiB production instance in `kernel`
+- **First-fit with word-level hint** — `next_hint` word index skips already-exhausted words; sequential allocations are O(1) in practice
+- Phase 1 allocates **only from immediately-usable (conventional) regions**; reclaimable regions (bootloader, ACPI) reclaimed in Phase 2+
+- **No internal synchronisation** — Phase 1 is single-core with interrupts disabled during all allocator calls; Phase 2 adds spinlock
 
-**Phase 1 Decision**: Start with bitmap allocator for simplicity, migrate to buddy allocator if needed.
-
-**NUMA Support**:
-- Allocator maintains per-NUMA-node free lists
-- Allocation prefers local NUMA node
-- Fallback to remote nodes if local is exhausted
-
-**Rust Interface (conceptual)**:
+**Actual API** (`ferrous-boot-info::BitmapFrameAllocator<const WORDS: usize>`):
 ```rust
-pub struct PhysicalFrameAllocator {
-    // Per-NUMA-node allocators
-    nodes: Vec<NodeAllocator>,
-    // ...
-}
+pub const KERNEL_BITMAP_WORDS: usize = 262_144; // supports 64 GiB
 
-impl PhysicalFrameAllocator {
-    /// Initialize from UEFI memory map
-    pub fn from_uefi_memory_map(map: &MemoryMap) -> Result<Self, MemoryError> {
-        // Parse memory map, mark reserved regions
-        // Initialize per-node allocators
-    }
-    
-    /// Allocate a frame, preferring local NUMA node
-    pub fn allocate_frame(&mut self) -> Option<PhysicalFrame> { /* ... */ }
-    
-    /// Allocate from specific NUMA node
-    pub fn allocate_frame_from_node(&mut self, node: NumaNode) -> Option<PhysicalFrame> {
-        /* ... */
-    }
+pub struct BitmapFrameAllocator<const WORDS: usize> { /* bitmap + metadata */ }
+
+impl<const WORDS: usize> BitmapFrameAllocator<WORDS> {
+    pub const fn new() -> Self;                              // all-zeros, BSS-safe
+    pub fn init_from_memory_map(&mut self, map: &MemoryMap); // mark usable frames free
+    pub fn mark_reserved(&mut self, phys_start: u64, size_bytes: u64);
+    pub fn allocate(&mut self) -> Option<PhysFrame>;         // first-fit with hint
+    pub fn deallocate(&mut self, frame: PhysFrame);          // double-free detected in debug
+    pub fn free_frames(&self) -> usize;
+    pub fn total_frames(&self) -> usize;                     // WORDS * 64
+    pub fn allocated_frames(&self) -> usize;
 }
 ```
+
+**Global kernel instance** (`kernel::memory::frame_allocator`):
+```rust
+// 2 MiB in BSS — zero binary overhead.
+static mut ALLOCATOR: BitmapFrameAllocator<KERNEL_BITMAP_WORDS> = BitmapFrameAllocator::new();
+static INITIALIZED: AtomicBool = AtomicBool::new(false);
+
+// Public API (unsafe — callers guarantee single-threaded access in Phase 1):
+pub unsafe fn init(map: &MemoryMap);
+pub unsafe fn allocate() -> Option<PhysFrame>;
+pub unsafe fn deallocate(frame: PhysFrame);
+pub unsafe fn mark_reserved(phys_start: u64, size_bytes: u64);
+
+// Safe stat queries:
+pub fn free_frames() -> Option<usize>;
+pub fn total_frames() -> Option<usize>;
+pub fn allocated_frames() -> Option<usize>;
+```
+
+**QEMU measurements** (Phase 1.3.2, PR #87):
+- 52,311 free frames (204 MiB immediately usable)
+- 16,777,216 total addressable frames (64 GiB bitmap capacity)
+- Smoke test: 3 allocations returned distinct, 4 KiB-aligned addresses; deallocation restored count
+
+**NUMA Support** (Phase 2+):
+- Phase 1 uses a single global bitmap
+- Phase 2+ will parse ACPI SRAT to build per-NUMA-node allocators
+- Allocation will prefer the local NUMA node with fallback to remote nodes
 
 ### Virtual Memory
 
@@ -482,10 +488,10 @@ Every unsafe block modifying page tables must document:
 - Prevents data races (borrow checker)
 - Clear lifetime semantics
 
-**PhysicalFrame Ownership**:
-- `PhysicalFrame` is owned (cannot be cloned)
-- Dropping a `PhysicalFrame` returns it to allocator
-- Moving frames between address spaces transfers ownership
+**PhysFrame Ownership (Phase 1)**:
+- `PhysFrame` is `Copy` in Phase 1 — no `Drop` because `ferrous-boot-info` cannot call into `kernel`
+- Callers explicitly invoke `frame_allocator::deallocate(frame)` when done
+- Phase 2 removes `Copy` and adds `Drop`-based automatic deallocation once the allocator moves into the kernel crate
 
 **PageTable Ownership**:
 - `AddressSpace` owns its `PageTable`
@@ -571,10 +577,12 @@ pub enum MemoryError {
    - Global instance stored via `kernel::memory::init()` / `kernel::memory::get()` using `MaybeUninit` + `AtomicBool`
    - Full region table printed to serial on every boot
 
-2. **Initialize Physical Frame Allocator** -- Phase 1.3.2 (pending)
-   - Build free frame bitmap from `memory::get().usable_regions()`
-   - Reserve frames for kernel code/data sections
-   - Initialize per-NUMA-node allocators (NUMA topology from ACPI SRAT, Phase 2+)
+2. **Initialize Physical Frame Allocator** -- COMPLETE (Phase 1.3.2, PR #87)
+   - `PhysFrame` and `BitmapFrameAllocator<const WORDS>` implemented in `ferrous-boot-info` (host-testable); 25 new unit tests (70 total)
+   - `kernel::memory::frame_allocator` holds a 2 MiB `static mut BitmapFrameAllocator<262144>` in BSS (zero binary bloat)
+   - `init_from_memory_map` marks immediately-usable (conventional) regions free; reclaimable regions remain reserved until Phase 2+ reclamation pass
+   - Phase 1 threading: single-core, interrupts disabled; `unsafe` API; Phase 2 adds spinlock
+   - QEMU boot output confirms 52,311 free frames / 204 MiB usable; 3-frame smoke test passes
 
 3. **Set Up Kernel Page Tables** -- Phase 1.3.3/1.3.4 (pending)
    - Identity map physical memory (temporary)
@@ -601,15 +609,15 @@ pub enum MemoryError {
 
 | Task | Status | Notes |
 |------|--------|-------|
-| UEFI memory map parsing | Complete (PR #64) | `MemoryMap`, `MemoryRegionKind`, `MemoryStats` in `ferrous-boot-info`; global storage in `kernel::memory` |
-| Physical frame allocator (bitmap) | Pending (1.3.2) | Consumes `memory::get().usable_regions()` |
+| UEFI memory map parsing | Complete (PR #64) | `MemoryMap`, `MemoryRegionKind`, `MemoryStats` in `ferrous-boot-info`; global `init`/`get` in `kernel::memory` |
+| Physical frame allocator (bitmap) | Complete (PR #87) | `BitmapFrameAllocator<262144>` in `ferrous-boot-info`; 2 MiB BSS bitmap; 52,311 free frames on QEMU |
 | Basic page table management (4 KB pages) | Pending (1.3.3/1.3.4) | x86-64 4-level PT; identity map then higher-half switch |
 | Kernel heap allocator (linked list) | Pending (1.3.5) | Implements `GlobalAlloc`; migrate to buddy in Phase 2 |
 | Higher-half kernel address space | Pending (1.3.3) | Kernel at 0xFFFF_8000_0000_0000+ |
 
 **Success Criteria**:
 - [x] UEFI memory map parsed, classified, and accessible to all kernel subsystems
-- [ ] Kernel can allocate and free physical frames
+- [x] Kernel can allocate and free physical frames
 - [ ] Kernel can create page tables and map pages
 - [ ] Kernel heap allocation works (`Box`, `Vec` available)
 - [ ] Boot completes with paging enabled
