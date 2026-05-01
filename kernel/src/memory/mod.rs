@@ -1,25 +1,26 @@
 //! Physical memory management subsystem.
 //!
 //! This module provides the kernel's authoritative view of physical memory,
-//! parsed from the bootloader-provided [`KernelMemoryMap`] at startup.
+//! parsed from the bootloader-provided [`KernelMemoryMap`] at startup,
+//! and manages a global physical frame allocator.
 //!
-//! # Usage
+//! # Initialisation sequence
 //!
-//! During early kernel initialisation (before the allocator runs), call
-//! [`init`] exactly once with the memory map from [`KernelBootInfo`]:
+//! Call both init functions exactly once during early boot, in order:
 //!
 //! ```ignore
+//! // Step 1: Parse and store the memory map.
 //! // SAFETY: called once, single-threaded, interrupts disabled.
 //! let map = unsafe { memory::init(&boot_info.memory_map) }
 //!     .expect("memory map parse failed");
+//!
+//! // Step 2: Initialise the physical frame allocator.
+//! // SAFETY: called once, after memory::init(), interrupts disabled.
+//! unsafe { memory::frame_allocator::init(map) };
 //! ```
 //!
-//! Thereafter any kernel subsystem can call [`get`] to borrow the map:
-//!
-//! ```ignore
-//! let map = memory::get().expect("memory not initialised");
-//! for region in map.usable_regions() { ... }
-//! ```
+//! Thereafter any kernel subsystem can call [`get`] to borrow the map or
+//! use [`frame_allocator::allocate`] to obtain physical frames.
 //!
 //! # Re-exports
 //!
@@ -27,6 +28,8 @@
 //! [`ParseError`]) live in [`ferrous_boot_info`] so they can be tested on the
 //! host without targeting `x86_64-unknown-none`. They are re-exported here
 //! for ergonomic access within the kernel.
+
+pub mod frame_allocator;
 
 use core::mem::MaybeUninit;
 use core::sync::atomic::{AtomicBool, Ordering};
