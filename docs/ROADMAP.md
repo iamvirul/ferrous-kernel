@@ -1,6 +1,6 @@
 # Ferrous Kernel - Development Roadmap
 
-**Last Updated:** 2026-04-17
+**Last Updated:** 2026-05-01
 **Status:** Phase 1 — Proof of Life (In Progress)
 
 ---
@@ -90,8 +90,11 @@ Every milestone must advance these core goals:
 - `kernel/src/arch/x86_64/idt.rs` added — 256-entry IDT with `IdtEntry`, `IdtPointer`, `ExceptionFrame` types and `unsafe load()`; 32 exception stubs (vectors 0-31) + generic IRQ stub (32-255) via `global_asm!`; `LIDT` loaded, interrupts remain disabled; verified active in QEMU serial output
 - Exception stubs upgraded — two `global_asm!` macro variants: `isr_stub` (no error code: RDI=vector, RSI=0, RDX=frame ptr) and `isr_stub_ec` (error code popped into RSI, RDX=frame ptr); `exception_handler()` prints vector name, error code (for vectors 8,10-14,17,21,29,30), faulting RIP+RFLAGS+RSP from the CPU-pushed `ExceptionFrame`, and CR2 for #PF (vector 14); boot verification passes
 - `MemoryMap`, `MemoryRegionKind`, `MemoryStats`, `ParseError` added to `ferrous-boot-info` — parses `KernelMemoryMap` from boot info, classifies UEFI memory types into kernel-relevant buckets, computes usable/reclaimable/total byte statistics; 45 host-side tests pass
-- `kernel/src/memory/mod.rs` added — global `MemoryMap` storage with `init()` / `get()` API backed by `MaybeUninit` + `AtomicBool`; Phase 1.3.2 physical allocator consumes this
+- `kernel/src/memory/mod.rs` added — global `MemoryMap` storage with `init()` / `get()` API backed by `MaybeUninit` + `AtomicBool`
 - `boot/src/main.rs` kernel_main Step 5 — prints full memory region table (base, end, size, type) and RAM summary to serial on every boot
+- `PhysFrame` and `BitmapFrameAllocator<const WORDS>` added to `ferrous-boot-info` — bitmap allocator (bit=1 free, bit=0 reserved); `const fn new()` produces all-zeros (BSS-safe); `init_from_memory_map` marks conventional regions free; O(1) amortised allocation with word-level hint; double-free detection in debug builds; 25 new host-side tests (70 total)
+- `kernel/src/memory/frame_allocator.rs` added — 2 MiB `static mut BitmapFrameAllocator<262144>` (64 GiB capacity, lives in BSS); `AtomicBool` init guard with Release/Acquire ordering; `unsafe` `init`, `allocate`, `deallocate`, `mark_reserved` API; safe stat queries `free_frames()`, `total_frames()`, `allocated_frames()`
+- `boot/src/main.rs` kernel_main Step 6 — initialises frame allocator, prints free/total frame counts and usable KiB, runs 3-frame smoke test (allocate, verify distinct + 4 KiB aligned, deallocate, verify count recovery); confirmed on QEMU (52,311 free frames / 204 MiB usable)
 
 #### 1.2 - Runtime Setup
 
@@ -107,7 +110,7 @@ Every milestone must advance these core goals:
 | Task | Issue | Status |
 |------|-------|--------|
 | 1.3.1 Parse UEFI Memory Map | #10 | Complete (PR #64) |
-| 1.3.2 Physical Memory Allocator | #13 | Not Started |
+| 1.3.2 Physical Memory Allocator | #13 | Complete (PR #87) |
 | 1.3.3 Virtual Memory Setup | #14 | Not Started |
 | 1.3.4 Page Table Management | #19 | Not Started |
 | 1.3.5 Kernel Heap Allocator | #20 | Not Started |
