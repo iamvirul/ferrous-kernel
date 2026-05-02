@@ -1,8 +1,8 @@
 # Ferrous Kernel - Boot Process Overview
 
-**Version:** 0.1  
-**Date:** 2026-01-04  
-**Status:** Design Phase (Phase 0)
+**Version:** 0.2  
+**Date:** 2026-05-02  
+**Status:** Phase 1 — Proof of Life (In Progress)
 
 ---
 
@@ -560,20 +560,30 @@ pub enum BootError {
 
 ### Phase 1: Basic Boot
 
-**Deliverables**:
-- UEFI entry point and handoff
-- Basic CPU setup (GDT, IDT)
-- Memory map parsing
-- Physical memory allocator
-- Virtual memory setup (identity mapping)
-- Kernel heap setup
-- Basic serial output
+**Deliverables and Status**:
+
+| Deliverable | Status | Notes |
+|-------------|--------|-------|
+| UEFI entry point and handoff | ✅ Complete (PR #56) | `kernel_entry` via RETFQ stack switch |
+| Basic serial output (COM1 UART) | ✅ Complete (PR #58) | 115200 8N1, `serial_write_str` helpers |
+| Kernel stack setup | ✅ Complete (PR #60) | 64 KiB + 4 KiB soft guard; `KernelStack<N>` |
+| GDT (null / kernel-code / kernel-data) | ✅ Complete (PR #61) | Loaded via `LGDT` + far-return CS reload |
+| IDT (32 exception stubs + IRQ) | ✅ Complete (PR #62) | `isr_stub` / `isr_stub_ec` asm macros |
+| Basic exception handlers | ✅ Complete (PR #63) | Prints vector, error code, RIP, CR2 (#PF) |
+| Memory map parsing | ✅ Complete (PR #64) | `MemoryMap` in `ferrous-boot-info`; global `init`/`get` |
+| Physical memory allocator | ✅ Complete (PR #87) | `BitmapFrameAllocator<262144>`; 52,311 free frames on QEMU |
+| Virtual memory setup | ✅ Complete (PR #88) | `KernelPageTable`; 2 MiB huge pages; CR3 loaded; higher-half alias confirmed |
+| Kernel heap setup | ⬜ Pending (1.3.5) | `GlobalAlloc` impl; `Box`/`Vec` available |
+| Logging framework | ⬜ Pending (1.4.1) | Structured serial logging |
+| Panic handler with stack traces | ⬜ Pending (1.4.2) | Source location + register dump |
 
 **Success Criteria**:
-- Kernel boots on QEMU x86_64
-- Can print "Hello from Ferrous!" to serial console
-- Paging is enabled
-- Kernel heap allocation works
+- [x] Kernel boots on QEMU x86_64
+- [x] Can print "Hello from Ferrous!" to serial console
+- [x] Page fault handler catches and reports violations
+- [x] Kernel owns its page tables (CR3 loaded, higher-half alias live)
+- [ ] Kernel heap allocation works (`Box`, `Vec` available)
+- [ ] Clean panic messages with source locations
 
 ### Phase 2: Full Boot Sequence
 

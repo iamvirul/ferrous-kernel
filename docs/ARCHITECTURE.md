@@ -1,8 +1,8 @@
 # Ferrous Kernel - System Architecture
 
-**Version:** 0.1  
-**Date:** 2026-01-04  
-**Status:** Design Phase (Phase 0)
+**Version:** 0.2  
+**Date:** 2026-05-02  
+**Status:** Phase 1 — Proof of Life (In Progress)
 
 ---
 
@@ -541,15 +541,22 @@ Ferrous provides a capability-based system call interface:
 
 ## Design Evolution
 
-### Phase 0 (Current): Foundation & Design
+### Phase 0: Foundation & Design — COMPLETE (Q1 2026)
 - Architecture document (this document)
 - Detailed subsystem designs
 - ADR template and initial ADRs
 
-### Phase 1: Proof of Life
+### Phase 1: Proof of Life — IN PROGRESS (Q2-Q3 2026)
 - Basic boot and memory management
 - No user-space yet
 - Foundation for all subsystems
+
+**Completed milestones:**
+- 1.1 Bare Metal Boot — UEFI entry, serial output, GDT, IDT, exception handlers
+- 1.2 Runtime Setup — kernel stack, GDT, IDT, basic exception handling
+- 1.3.1 Parse UEFI Memory Map — `MemoryMap` in `ferrous-boot-info`, global `init`/`get`
+- 1.3.2 Physical Frame Allocator — `BitmapFrameAllocator<262144>`, 52,311 free frames on QEMU
+- 1.3.3 Virtual Memory Setup — `VirtualAddress`, `PhysicalAddress`, `PageTable`, `KernelPageTable`; CR3 loaded, higher-half alias at `0xFFFF_8000_0000_0000` confirmed live
 
 ### Phase 2: Core Kernel
 - Scheduler, IPC, capabilities
@@ -622,8 +629,8 @@ This architecture prioritizes **correctness and safety** over features, enabling
 ---
 
 **Next Steps**: 
-1. Create detailed design documents for each subsystem (Phase 0)
-2. Begin implementation of boot and memory management (Phase 1)
+1. Complete Phase 1.3 memory management (1.3.4 page management, 1.3.5 heap allocator)
+2. Complete Phase 1.4 core infrastructure (logging, panic handler, debug macros)
 3. Iterate on architecture based on implementation experience
 
 ---
