@@ -97,6 +97,8 @@ Every milestone must advance these core goals:
 - `boot/src/main.rs` kernel_main Step 6 — initialises frame allocator, prints free/total frame counts and usable KiB, runs 3-frame smoke test (allocate, verify distinct + 4 KiB aligned, deallocate, verify count recovery); confirmed on QEMU (52,311 free frames / 204 MiB usable)
 - `kernel/src/memory/paging/` added — canonical page table types: `VirtualAddress` (canonical-form validated), `PhysicalAddress`, `PageTableEntry` + `flags` constants, `PageTable` ([PageTableEntry; 512], 4 KiB-aligned), `KernelPageTable` (PML4+PDPT+PD inline, Phase 1 mapper); `paging` added to `kernel::memory`
 - `boot/src/main.rs` kernel_main Step 7 — `setup_page_tables()` builds 3-level hierarchy (PML4→PDPT→PD) with 512 × 2 MiB huge pages covering [0, 1 GiB) identity + PML4[256] higher-half alias at 0xFFFF_8000_0000_0000; `MOV CR3` loads our tables; CR3 readback verified; higher-half alias probed via `read_volatile` (PML4[0]=0xde1d023 matching through both windows); QEMU boot verification passes
+- `kernel/src/memory/paging/mapper.rs` rewritten for Phase 1.3.4 — `FrameAllocate` trait decouples mapper from allocator; `ActivePageTable` provides `map_4k`, `unmap_4k`, `translate` over the live CR3 tables; `MapError`/`UnmapError` typed results; `split_huge_pd` automatically splits 2 MiB PD entries when `map_4k` targets a 4 KiB page within a huge region; `invlpg` + `flush_tlb_all` for TLB management; `iter_mut` added to `PageTable`; all types re-exported from `kernel::memory::paging`
+- `boot/src/main.rs` kernel_main Step 8 — inline smoke test (boot crate does not depend on kernel crate): (A) translate confirms identity-mapped VA resolves to same PA; (B) map_4k + translate + unmap_4k round-trip at unmapped PML4[1] VA; (C) huge-page split on the 2 MiB region covering KERNEL_STACK bottom — guard 4 KiB marked non-present, translate → None confirmed; QEMU boot verification passes
 
 #### 1.2 - Runtime Setup
 
@@ -114,7 +116,7 @@ Every milestone must advance these core goals:
 | 1.3.1 Parse UEFI Memory Map | #10 | Complete (PR #64) |
 | 1.3.2 Physical Memory Allocator | #13 | Complete (PR #87) |
 | 1.3.3 Virtual Memory Setup | #14 | Complete (PR #88) |
-| 1.3.4 Page Table Management | #19 | Not Started |
+| 1.3.4 Page Table Management | #19 | Complete (PR #TBD) |
 | 1.3.5 Kernel Heap Allocator | #20 | Not Started |
 
 #### 1.4 - Core Infrastructure
