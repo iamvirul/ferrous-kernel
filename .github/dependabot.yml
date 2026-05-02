@@ -1,0 +1,57 @@
+version: 2
+updates:
+
+  # ── GitHub Actions ──────────────────────────────────────────────────────
+  # Covers all .github/workflows/*.yml files.
+  #
+  # Current third-party actions in use:
+  #   dtolnay/rust-toolchain  (pinned to SHA — nightly)
+  #   actions/checkout
+  #   actions/cache
+  #   actions/upload-artifact
+  #   actions/download-artifact
+  #   github/codeql-action/init
+  #   github/codeql-action/analyze
+  #
+  # Dependabot understands SHA-pinned actions: when a new release tag is
+  # published upstream, it will open a PR proposing the updated SHA while
+  # keeping the '# <tag>' comment accurate.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "UTC"
+    target-branch: "main"
+    labels:
+      - "type-infrastructure"
+    commit-message:
+      prefix: "ci(deps)"
+
+  # ── Cargo (Rust workspace) ───────────────────────────────────────────────
+  # A single root entry covers the entire workspace (root Cargo.toml lists
+  # all members):
+  #
+  #   boot/          ferrous-boot      — uefi = "0.33", log = "0.4"
+  #   kernel/        ferrous-kernel    — no external crates yet
+  #   lib/boot-info/ ferrous-boot-info — no external crates yet
+  #   lib/core/      ferrous-core      — no external crates yet
+  #   lib/alloc/     ferrous-alloc     — no external crates yet
+  #
+  # Dependency bumps for a bare-metal kernel need manual review and a QEMU
+  # smoke-test run before merging; limit open PRs to keep the queue
+  # manageable.
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "UTC"
+    target-branch: "main"
+    labels:
+      - "type-infrastructure"
+    commit-message:
+      prefix: "deps(cargo)"
+    open-pull-requests-limit: 5
