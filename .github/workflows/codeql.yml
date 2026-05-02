@@ -57,7 +57,7 @@ jobs:
       # rust-src is required by the UEFI target's build-std configuration.
       - name: Install Rust toolchain
         if: matrix.language == 'rust'
-        uses: dtolnay/rust-toolchain@nightly
+        uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # nightly
         with:
           targets: x86_64-unknown-none,x86_64-unknown-uefi
           components: rust-src
