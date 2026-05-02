@@ -31,7 +31,9 @@ pub mod mapper;
 pub mod table;
 
 pub use entry::{flags, PageTableEntry};
-pub use mapper::KernelPageTable;
+pub use mapper::{
+    flush_tlb_all, invlpg, ActivePageTable, FrameAllocate, KernelPageTable, MapError, UnmapError,
+};
 pub use table::PageTable;
 
 // ---------------------------------------------------------------------------

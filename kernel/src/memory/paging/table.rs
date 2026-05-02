@@ -69,10 +69,16 @@ impl PageTable {
         &mut self.entries[index]
     }
 
-    /// Iterate over all 512 entries.
+    /// Iterate over all 512 entries (shared).
     #[inline]
     pub fn iter(&self) -> core::slice::Iter<'_, PageTableEntry> {
         self.entries.iter()
+    }
+
+    /// Iterate over all 512 entries (mutable).
+    #[inline]
+    pub fn iter_mut(&mut self) -> core::slice::IterMut<'_, PageTableEntry> {
+        self.entries.iter_mut()
     }
 
     /// Return the number of present entries in this table.

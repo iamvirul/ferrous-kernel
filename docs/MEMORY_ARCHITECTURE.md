@@ -1,8 +1,8 @@
 # Ferrous Kernel - Memory Management Architecture
 
-**Version:** 0.4
+**Version:** 0.5
 **Date:** 2026-05-02
-**Status:** Phase 1 In Progress (1.3.1, 1.3.2, and 1.3.3 complete, 1.3.4-1.3.5 pending)
+**Status:** Phase 1 In Progress (1.3.1–1.3.4 complete, 1.3.5 pending)
 
 ---
 
@@ -589,9 +589,16 @@ pub enum MemoryError {
    - Phase 1 uses **2 MiB huge pages** (PS=1 in PD entries): `PML4[0]→PDPT[0]→PD[0..511]` covers [0, 1 GiB) identity; `PML4[256]→PDPT` creates higher-half alias at `0xFFFF_8000_0000_0000`
    - Boot Step 7 (`setup_page_tables`) populates three raw 4 KiB BSS statics via raw pointer writes (`addr_of_mut!`), loads PML4 physical address into CR3 (`MOV CR3`)
    - CR3 readback verified; higher-half alias confirmed via `read_volatile` through `0xFFFF_8000_...` VA; QEMU boot verification passes
-   - Note: identity map is permanent in Phase 1 (no linker script for kernel VMA yet); Phase 1.3.4 adds fine-grained 4 KiB page mappings
 
-4. **Switch to Higher-Half Kernel** -- Deferred to Phase 2
+4. **Fine-Grained 4 KiB Page Mapping** -- COMPLETE (Phase 1.3.4, PR #89)
+   - `FrameAllocate` trait in `kernel::memory::paging::mapper` decouples page-walker from specific allocator
+   - `ActivePageTable` type provides `map_4k`, `unmap_4k`, `translate` over the live CR3 tables
+   - `MapError` (`OutOfMemory`, `AlreadyMapped`, `HugePageConflict`) and `UnmapError` (`NotMapped`, `HugePage`) as typed results
+   - `split_huge_pd` automatically splits a 2 MiB PD entry into 512 × 4 KiB PT entries when `map_4k` hits a huge-page on the walk path; full TLB flush via CR3 reload after split
+   - `invlpg` (single-VA TLB invalidation after each map/unmap) and `flush_tlb_all` (CR3 reload for bulk splits)
+   - Boot Step 8 smoke test: (A) translate identity-mapped VA; (B) map/unmap round-trip at unmapped PML4[1] VA; (C) huge-page split activates KERNEL_STACK guard page (4 KiB non-present); QEMU boot verification passes
+
+5. **Switch to Higher-Half Kernel** -- Deferred to Phase 2
    - Phase 1 establishes the higher-half alias window but the kernel continues running at identity-mapped VAs (same binary, no linker-script VMA offset)
    - Full higher-half switch (kernel loaded at `0xFFFF_8000_0000_0000`, low identity map removed) happens when the kernel becomes a separate ELF binary in Phase 2
 
@@ -613,7 +620,7 @@ pub enum MemoryError {
 | UEFI memory map parsing | Complete (PR #64) | `MemoryMap`, `MemoryRegionKind`, `MemoryStats` in `ferrous-boot-info`; global `init`/`get` in `kernel::memory` |
 | Physical frame allocator (bitmap) | Complete (PR #87) | `BitmapFrameAllocator<262144>` in `ferrous-boot-info`; 2 MiB BSS bitmap; 52,311 free frames on QEMU |
 | Basic page table management (2 MiB huge pages) | Complete (PR #88) | `VirtualAddress`, `PhysicalAddress`, `PageTableEntry`, `PageTable`, `KernelPageTable`; identity + higher-half alias confirmed on QEMU |
-| Fine-grained 4 KiB page mapping | Pending (1.3.4) | Walk existing tables, allocate PT frames, map/unmap individual pages |
+| Fine-grained 4 KiB page mapping | Complete (PR #89) | `ActivePageTable` with `map_4k`/`unmap_4k`/`translate`; `FrameAllocate` trait; `split_huge_pd`; `invlpg` + `flush_tlb_all`; guard page activated in boot Step 8 |
 | Kernel heap allocator (linked list) | Pending (1.3.5) | Implements `GlobalAlloc`; migrate to buddy in Phase 2 |
 | Higher-half kernel binary (Phase 2) | Pending | Full ELF relocation to `0xFFFF_8000_0000_0000`; remove identity map |
 
@@ -622,7 +629,7 @@ pub enum MemoryError {
 - [x] Kernel can allocate and free physical frames
 - [x] Kernel owns its page tables (replaced UEFI firmware tables with Ferrous tables at boot)
 - [x] Higher-half window established at `0xFFFF_8000_0000_0000`
-- [ ] Kernel can map/unmap individual 4 KiB pages
+- [x] Kernel can map/unmap individual 4 KiB pages
 - [ ] Kernel heap allocation works (`Box`, `Vec` available)
 - [ ] Kernel binary loaded at higher-half VMA
 
