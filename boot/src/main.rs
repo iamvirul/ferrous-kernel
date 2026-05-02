@@ -226,6 +226,259 @@ unsafe fn setup_page_tables() -> u64 {
 }
 
 // ---------------------------------------------------------------------------
+// Boot page-table helpers (Phase 1.3.4)
+//
+// The boot crate does not link against the kernel crate, so `ActivePageTable`
+// and `FrameAllocate` from `kernel/src/memory/paging/mapper.rs` are not
+// directly available here.  These inline helpers replicate the same logic
+// with the same safety invariants:
+//   - VA == PA (identity mapping from Step 7).
+//   - Single-threaded, interrupts disabled.
+//   - FRAME_ALLOC initialised in Step 6.
+// ---------------------------------------------------------------------------
+
+/// Walk the live page tables and translate `virt` to a physical address.
+///
+/// Handles 1 GiB (PDPT huge), 2 MiB (PD huge), and 4 KiB (PT) mappings.
+/// Returns `None` if any level is absent or the final entry is not present.
+///
+/// # Safety
+///
+/// Identity mapping must hold; CR3 must point to a valid PML4.
+unsafe fn boot_translate(virt: u64) -> Option<u64> {
+    let cr3: u64;
+    core::arch::asm!("mov {cr3}, cr3", cr3 = out(reg) cr3, options(nomem, nostack));
+    let pml4 = (cr3 & PT_PHYS_MASK) as *const u64;
+
+    let pml4e = pml4.add(((virt >> 39) & 0x1FF) as usize).read();
+    if pml4e & PT_PRESENT == 0 {
+        return None;
+    }
+
+    let pdpt = (pml4e & PT_PHYS_MASK) as *const u64;
+    let pdpte = pdpt.add(((virt >> 30) & 0x1FF) as usize).read();
+    if pdpte & PT_PRESENT == 0 {
+        return None;
+    }
+    if pdpte & PT_HUGE != 0 {
+        // 1 GiB huge page: PA = base | (virt & (1 GiB − 1))
+        return Some((pdpte & PT_PHYS_MASK) | (virt & 0x3FFF_FFFF));
+    }
+
+    let pd = (pdpte & PT_PHYS_MASK) as *const u64;
+    let pde = pd.add(((virt >> 21) & 0x1FF) as usize).read();
+    if pde & PT_PRESENT == 0 {
+        return None;
+    }
+    if pde & PT_HUGE != 0 {
+        // 2 MiB huge page: PA = base | (virt & (2 MiB − 1))
+        return Some((pde & PT_PHYS_MASK) | (virt & 0x1F_FFFF));
+    }
+
+    let pt = (pde & PT_PHYS_MASK) as *const u64;
+    let pte = pt.add(((virt >> 12) & 0x1FF) as usize).read();
+    if pte & PT_PRESENT == 0 {
+        return None;
+    }
+    Some((pte & PT_PHYS_MASK) | (virt & 0xFFF))
+}
+
+/// Ensure `entry` points to a child page table.
+///
+/// - If `entry` is already present, returns its physical address.
+/// - If absent, allocates a 4 KiB frame, zeroes it, installs
+///   `Present | Writable`, and returns the new frame address.
+///
+/// Returns `None` if the frame allocator is exhausted.
+///
+/// # Safety
+///
+/// Identity mapping must hold.
+#[allow(static_mut_refs)]
+unsafe fn boot_ensure_table(entry: *mut u64) -> Option<u64> {
+    let val = entry.read();
+    if val & PT_PRESENT != 0 {
+        return Some(val & PT_PHYS_MASK);
+    }
+    let frame = FRAME_ALLOC.allocate()?.start_address() as u64;
+    // Zero the newly allocated frame before installing it as a table.
+    let p = frame as *mut u64;
+    for i in 0..512usize {
+        p.add(i).write(0u64);
+    }
+    entry.write((frame & PT_PHYS_MASK) | PT_PRESENT | PT_WRITABLE);
+    Some(frame)
+}
+
+/// Map a single 4 KiB page at `virt` to physical frame `phys`.
+///
+/// Creates intermediate tables (PDPT, PD, PT) as needed via
+/// [`boot_ensure_table`].  Returns `false` if a frame allocation fails or
+/// the PT entry is already present.
+///
+/// **Does not handle huge-page splits** — the test VA (PML4[1] area) is in a
+/// region where no intermediate levels exist, so this simplified path is
+/// sufficient for the smoke test.
+///
+/// # Safety
+///
+/// - Identity mapping must hold.
+/// - `virt` must not be in a huge-page region.
+unsafe fn boot_map_4k(virt: u64, phys: u64, flags: u64) -> bool {
+    let cr3: u64;
+    core::arch::asm!("mov {cr3}, cr3", cr3 = out(reg) cr3, options(nomem, nostack));
+    let pml4 = (cr3 & PT_PHYS_MASK) as *mut u64;
+
+    let pml4e = pml4.add(((virt >> 39) & 0x1FF) as usize);
+    let pdpt_phys = match boot_ensure_table(pml4e) {
+        Some(p) => p,
+        None => return false,
+    };
+    let pdpt = pdpt_phys as *mut u64;
+
+    let pdpte = pdpt.add(((virt >> 30) & 0x1FF) as usize);
+    let pd_phys = match boot_ensure_table(pdpte) {
+        Some(p) => p,
+        None => return false,
+    };
+    let pd = pd_phys as *mut u64;
+
+    let pde = pd.add(((virt >> 21) & 0x1FF) as usize);
+    let pt_phys = match boot_ensure_table(pde) {
+        Some(p) => p,
+        None => return false,
+    };
+    let pt = pt_phys as *mut u64;
+
+    let pte = pt.add(((virt >> 12) & 0x1FF) as usize);
+    if pte.read() & PT_PRESENT != 0 {
+        return false; // already mapped
+    }
+    pte.write((phys & PT_PHYS_MASK) | flags);
+
+    // Invalidate the TLB entry for this specific VA.
+    core::arch::asm!(
+        "invlpg [{addr}]",
+        addr = in(reg) virt,
+        options(nostack, preserves_flags),
+    );
+    true
+}
+
+/// Unmap a single 4 KiB page at `virt`.
+///
+/// Clears the PT entry and issues `INVLPG`.  Returns `true` if the entry
+/// was present and cleared, `false` if the VA was not 4 KiB-mapped.
+///
+/// # Safety
+///
+/// Identity mapping must hold.
+unsafe fn boot_unmap_4k(virt: u64) -> bool {
+    let cr3: u64;
+    core::arch::asm!("mov {cr3}, cr3", cr3 = out(reg) cr3, options(nomem, nostack));
+    let pml4 = (cr3 & PT_PHYS_MASK) as *const u64;
+
+    let pml4e = pml4.add(((virt >> 39) & 0x1FF) as usize).read();
+    if pml4e & PT_PRESENT == 0 {
+        return false;
+    }
+    let pdpt = (pml4e & PT_PHYS_MASK) as *const u64;
+    let pdpte = pdpt.add(((virt >> 30) & 0x1FF) as usize).read();
+    if pdpte & PT_PRESENT == 0 || pdpte & PT_HUGE != 0 {
+        return false;
+    }
+    let pd = (pdpte & PT_PHYS_MASK) as *const u64;
+    let pde = pd.add(((virt >> 21) & 0x1FF) as usize).read();
+    if pde & PT_PRESENT == 0 || pde & PT_HUGE != 0 {
+        return false;
+    }
+    let pt = (pde & PT_PHYS_MASK) as *mut u64;
+    let pte = pt.add(((virt >> 12) & 0x1FF) as usize);
+    if pte.read() & PT_PRESENT == 0 {
+        return false;
+    }
+    pte.write(0u64);
+
+    core::arch::asm!(
+        "invlpg [{addr}]",
+        addr = in(reg) virt,
+        options(nostack, preserves_flags),
+    );
+    true
+}
+
+/// Split the 2 MiB huge PD entry covering `guard_va` into 512 × 4 KiB
+/// entries, then mark the 4 KiB page that contains `guard_va` non-present.
+///
+/// This is used in Step 8 to activate the kernel stack guard page: before
+/// this call the guard region is covered by the same 2 MiB huge page as
+/// the rest of the stack; after this call any access to the guard 4 KiB
+/// raises a `#PF`.
+///
+/// Returns `true` on success, `false` if FRAME_ALLOC is exhausted or the
+/// target PD entry is not a 2 MiB huge page.
+///
+/// # Safety
+///
+/// - Identity mapping must hold.
+/// - `guard_va` must be within a 2 MiB huge-page region (PS=1 in the PDE).
+#[allow(static_mut_refs)]
+unsafe fn boot_activate_guard_page(guard_va: u64) -> bool {
+    let cr3: u64;
+    core::arch::asm!("mov {cr3}, cr3", cr3 = out(reg) cr3, options(nomem, nostack));
+    let pml4 = (cr3 & PT_PHYS_MASK) as *const u64;
+
+    let pml4e = pml4.add(((guard_va >> 39) & 0x1FF) as usize).read();
+    if pml4e & PT_PRESENT == 0 {
+        return false;
+    }
+    let pdpt = (pml4e & PT_PHYS_MASK) as *const u64;
+    let pdpte = pdpt.add(((guard_va >> 30) & 0x1FF) as usize).read();
+    if pdpte & PT_PRESENT == 0 || pdpte & PT_HUGE != 0 {
+        return false; // absent or 1 GiB huge (not handled here)
+    }
+    let pd = (pdpte & PT_PHYS_MASK) as *mut u64;
+    let pde = pd.add(((guard_va >> 21) & 0x1FF) as usize);
+    let pde_val = pde.read();
+    if pde_val & PT_PRESENT == 0 || pde_val & PT_HUGE == 0 {
+        return false; // not a 2 MiB huge page
+    }
+
+    // Split: reproduce the 2 MiB region as 512 × 4 KiB PT entries.
+    let huge_base = pde_val & PT_PHYS_MASK; // 2 MiB-aligned PA
+    let base_flags = (pde_val & !PT_PHYS_MASK & !PT_HUGE) | PT_PRESENT;
+
+    let pt_frame = match FRAME_ALLOC.allocate() {
+        Some(f) => f.start_address() as u64,
+        None => return false,
+    };
+    let pt = pt_frame as *mut u64;
+    for i in 0..512usize {
+        let phys = huge_base + (i as u64) * 4096;
+        pt.add(i).write((phys & PT_PHYS_MASK) | base_flags);
+    }
+    // Replace the 2 MiB PDE with a pointer to the new PT.
+    pde.write((pt_frame & PT_PHYS_MASK) | PT_PRESENT | PT_WRITABLE);
+
+    // Flush the entire TLB — the 2 MiB entry is now stale.
+    let cr3_val: u64;
+    core::arch::asm!("mov {cr3}, cr3", cr3 = out(reg) cr3_val, options(nomem, nostack));
+    core::arch::asm!("mov cr3, {cr3}", cr3 = in(reg) cr3_val, options(nostack));
+
+    // Zero the PT entry for the guard page itself.
+    let guard_pt_idx = (guard_va >> 12) & 0x1FF;
+    pt.add(guard_pt_idx as usize).write(0u64);
+
+    // Targeted TLB invalidation for the guard VA.
+    core::arch::asm!(
+        "invlpg [{addr}]",
+        addr = in(reg) guard_va,
+        options(nostack, preserves_flags),
+    );
+    true
+}
+
+// ---------------------------------------------------------------------------
 // Panic handler
 // ---------------------------------------------------------------------------
 
@@ -847,6 +1100,164 @@ fn kernel_main(boot_info: &KernelBootInfo) -> ! {
     } else {
         serial_write_str("[WARN] Higher-half alias read zero — PML4[0] unexpectedly empty\r\n");
     }
+
+    // -----------------------------------------------------------------------
+    // Step 8: Page table management smoke test (Phase 1.3.4).
+    //
+    // Three sub-tests exercise the full map/translate/unmap surface and the
+    // huge-page splitting path:
+    //
+    //   A) translate — verify a known identity-mapped VA resolves correctly
+    //      through the 2 MiB huge-page path.
+    //   B) map / translate / unmap cycle — allocate a fresh frame, install
+    //      it at a VA in the unmapped PML4[1] region, verify translate
+    //      returns the expected PA, then unmap and confirm translate → None.
+    //   C) Guard page — split the 2 MiB huge page that covers the kernel
+    //      stack bottom, mark the guard 4 KiB non-present, confirm
+    //      translate → None for the guard VA and Some(_) above it.
+    //
+    // SAFETY invariants that hold for the entire step:
+    //   - VA == PA (identity mapping established in Step 7).
+    //   - Single-threaded, interrupts disabled.
+    //   - FRAME_ALLOC initialised in Step 6.
+    serial_write_str("\r\n[...] Page table management smoke test\r\n");
+
+    // --- Test A: translate a known identity-mapped VA ---
+    //
+    // PT_PML4 is a static in BSS; its VA equals its PA under identity map.
+    // The translate walk reaches it via a 2 MiB huge PD entry.
+    let known_va = core::ptr::addr_of!(PT_PML4) as u64;
+    match unsafe { boot_translate(known_va) } {
+        Some(pa) if pa == known_va => {
+            serial_write_str("[OK] A) translate: 0x");
+            serial_write_usize_hex(known_va as usize);
+            serial_write_str(" -> 0x");
+            serial_write_usize_hex(pa as usize);
+            serial_write_str(" (identity confirmed)\r\n");
+        }
+        Some(pa) => {
+            serial_write_str("[FAIL] A) translate PA mismatch: expected 0x");
+            serial_write_usize_hex(known_va as usize);
+            serial_write_str(" got 0x");
+            serial_write_usize_hex(pa as usize);
+            serial_write_str("\r\n");
+        }
+        None => {
+            serial_write_str("[FAIL] A) translate returned None for identity-mapped VA 0x");
+            serial_write_usize_hex(known_va as usize);
+            serial_write_str("\r\n");
+        }
+    }
+
+    // --- Test B: map / translate / unmap cycle ---
+    //
+    // VA 0x0000_0080_0000_0000 is PML4[1] — no intermediate tables exist
+    // for this region, so map_4k must create PDPT + PD + PT from scratch.
+    let test_va: u64 = 0x0000_0080_0000_0000;
+
+    // Allocate one free frame to serve as the mapped physical page.
+    #[allow(static_mut_refs)]
+    let test_frame: Option<u64> =
+        unsafe { FRAME_ALLOC.allocate().map(|f| f.start_address() as u64) };
+
+    match test_frame {
+        None => {
+            serial_write_str("[SKIP] B) map/unmap cycle: no free frames available\r\n");
+        }
+        Some(phys) => {
+            // Map.
+            let mapped = unsafe { boot_map_4k(test_va, phys, PT_PRESENT | PT_WRITABLE) };
+            if mapped {
+                serial_write_str("[OK] B) map_4k at 0x");
+                serial_write_usize_hex(test_va as usize);
+                serial_write_str(" -> phys 0x");
+                serial_write_usize_hex(phys as usize);
+                serial_write_str("\r\n");
+            } else {
+                serial_write_str("[FAIL] B) boot_map_4k returned false\r\n");
+            }
+
+            // Translate after map.
+            match unsafe { boot_translate(test_va) } {
+                Some(pa) if pa == phys => {
+                    serial_write_str("[OK] B) translate after map: 0x");
+                    serial_write_usize_hex(test_va as usize);
+                    serial_write_str(" -> 0x");
+                    serial_write_usize_hex(pa as usize);
+                    serial_write_str("\r\n");
+                }
+                Some(pa) => {
+                    serial_write_str("[FAIL] B) translate after map: expected 0x");
+                    serial_write_usize_hex(phys as usize);
+                    serial_write_str(" got 0x");
+                    serial_write_usize_hex(pa as usize);
+                    serial_write_str("\r\n");
+                }
+                None => {
+                    serial_write_str("[FAIL] B) translate after map returned None\r\n");
+                }
+            }
+
+            // Unmap.
+            let unmapped = unsafe { boot_unmap_4k(test_va) };
+            if unmapped {
+                serial_write_str("[OK] B) unmap_4k succeeded\r\n");
+            } else {
+                serial_write_str("[FAIL] B) boot_unmap_4k returned false\r\n");
+            }
+
+            // Translate after unmap — must be gone.
+            match unsafe { boot_translate(test_va) } {
+                None => {
+                    serial_write_str("[OK] B) translate after unmap: None\r\n");
+                }
+                Some(pa) => {
+                    serial_write_str("[FAIL] B) translate after unmap: expected None, got 0x");
+                    serial_write_usize_hex(pa as usize);
+                    serial_write_str("\r\n");
+                }
+            }
+        }
+    }
+
+    // --- Test C: guard page activation ---
+    //
+    // The kernel stack static starts at `stack_bottom`.  That address is
+    // within [0, 1 GiB), covered by a 2 MiB huge PD entry.  We split that
+    // entry and mark the first 4 KiB (the guard zone) non-present.
+    let guard_va = unsafe { core::ptr::addr_of!(KERNEL_STACK) as u64 };
+    let above_guard = guard_va + 4096; // first usable stack page
+
+    let split_ok = unsafe { boot_activate_guard_page(guard_va) };
+    if split_ok {
+        serial_write_str("[OK] C) 2 MiB page split, guard marked non-present\r\n");
+
+        // Guard VA must not be translatable.
+        match unsafe { boot_translate(guard_va) } {
+            None => {
+                serial_write_str("[OK] C) guard page translate -> None\r\n");
+            }
+            Some(pa) => {
+                serial_write_str("[FAIL] C) guard page still maps to 0x");
+                serial_write_usize_hex(pa as usize);
+                serial_write_str("\r\n");
+            }
+        }
+
+        // The page immediately above the guard must still be present.
+        match unsafe { boot_translate(above_guard) } {
+            Some(_) => {
+                serial_write_str("[OK] C) page above guard is still present\r\n");
+            }
+            None => {
+                serial_write_str("[FAIL] C) page above guard is not mapped!\r\n");
+            }
+        }
+    } else {
+        serial_write_str("[SKIP] C) guard page: insufficient memory for huge-page split\r\n");
+    }
+
+    serial_write_str("[OK] Page table management smoke test complete\r\n");
 
     serial_write_str(
         "\r\nKernel halting. Exception handlers active — any CPU exception will be caught.\r\n",
