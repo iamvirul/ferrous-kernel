@@ -1,14 +1,15 @@
 # CodeQL Security Analysis — Ferrous Kernel
 #
-# Scans GitHub Actions workflow files and all Rust crates in the workspace.
+# Scans GitHub Actions workflow files and all Rust source in the workspace.
 #
-# Rust build notes:
-#   - ferrous-kernel targets x86_64-unknown-none  (no_std bare-metal kernel)
-#   - ferrous-boot   targets x86_64-unknown-uefi  (UEFI PE/COFF binary)
-#   - ferrous-boot-info compiles for the host (shared library, tested on host)
+# Build mode notes:
+#   - actions: none  — workflow files are analysed without a build step.
+#   - rust:    none  — the CodeQL Rust extractor is source-based; it parses
+#                      Rust syntax directly and does not trace compilation.
+#                      'manual' is not supported by the Rust extractor.
 #
-# Because custom bare-metal targets require specific toolchain flags, the Rust
-# analysis uses build-mode: manual rather than CodeQL's autobuild.
+# Because no compilation is required, no Rust toolchain installation or
+# build step is needed in this workflow.
 
 name: "CodeQL Security Analysis"
 
@@ -40,67 +41,26 @@ jobs:
           - language: actions
             build-mode: none
 
-          # Scan all Rust crates. build-mode: manual because the kernel and
-          # boot crates require cross-compilation targets that autobuild
-          # cannot infer.
+          # Scan Rust source. The CodeQL Rust extractor is source-based —
+          # it parses .rs files directly without tracing a compiler run.
+          # 'manual' mode is not supported; 'none' is the only valid option.
           - language: rust
-            build-mode: manual
+            build-mode: none
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Install the nightly Rust toolchain used across the project.
-      # Targets:
-      #   x86_64-unknown-none  — bare-metal kernel crate
-      #   x86_64-unknown-uefi  — UEFI boot crate
-      # rust-src is required by the UEFI target's build-std configuration.
-      - name: Install Rust toolchain
-        if: matrix.language == 'rust'
-        uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # nightly
-        with:
-          targets: x86_64-unknown-none,x86_64-unknown-uefi
-          components: rust-src
-
-      # Cache Cargo registry and compiled dependencies to speed up scans.
-      - name: Cache Cargo registry and build artifacts
-        if: matrix.language == 'rust'
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-codeql-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-codeql-cargo-
-
-      # Initialise CodeQL before the build so it can instrument the compiler.
-      # security-extended adds queries beyond the default set — appropriate for
-      # a kernel codebase where unsafe code is explicitly reviewed and any
-      # missed vulnerability has elevated impact.
+      # Initialise CodeQL before analysis.
+      # security-extended adds queries beyond the default set — appropriate
+      # for a kernel codebase where unsafe code is intentional and any missed
+      # vulnerability has elevated impact.
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
           queries: security-extended
-
-      # Build all crates with their correct targets.
-      # CodeQL traces the compilation to identify which source files were
-      # analysed; building all crates ensures full coverage of the workspace.
-      - name: Build Rust crates
-        if: matrix.build-mode == 'manual'
-        run: |
-          # Kernel crate — no_std / no_main, bare-metal x86_64.
-          cargo build -p ferrous-kernel --target x86_64-unknown-none
-
-          # Boot crate — UEFI PE/COFF application.
-          cargo build -p ferrous-boot --target x86_64-unknown-uefi
-
-          # Shared library (host target) — also compiled by the two above,
-          # but building it explicitly keeps CodeQL's source tracing complete.
-          cargo build -p ferrous-boot-info
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v4
