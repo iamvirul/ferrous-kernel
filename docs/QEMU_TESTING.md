@@ -1,6 +1,6 @@
 # QEMU Testing Guide
 
-**Last Updated:** 2026-03-07
+**Last Updated:** 2026-05-02
 **Applies to:** Phase 1 (Proof of Life)
 
 ---
@@ -102,9 +102,9 @@ Adjust the OVMF path for your system:
 
 ---
 
-## Expected Output — Phase 1.1 (Bare Metal Boot)
+## Expected Output — Phase 1 Current (through 1.3.3)
 
-A successful Phase 1.1 boot produces the following on the serial console. This output is the authoritative reference for the `verify-boot.sh` script.
+A successful boot through Phase 1.3.3 produces the following on the serial console. This output is the authoritative reference for the `verify-boot.sh` script.
 
 ```
 ========================================
@@ -117,12 +117,6 @@ A successful Phase 1.1 boot produces the following on the serial console. This o
 [...] Retrieving memory map
     Found 99 memory regions
 [OK] Memory map retrieved
-
-Memory Map Summary:
--------------------
-  0x0000000000 - 0x00000a0000: Conventional (640 KB)
-  ... (entries vary by QEMU version and RAM size)
-
 [...] Looking for ACPI tables
 [OK] ACPI RSDP found at: 0xf77e014
 [...] Looking for GOP framebuffer
@@ -139,15 +133,42 @@ Memory Map Summary:
 
 === Ferrous Kernel ===
 [OK] kernel_entry: BootInfo validated
+[OK] Kernel stack active
+[INFO] Kernel stack: 0x<addr> - 0x<addr> (64 KiB, guard=4 KiB)
+[OK] GDT loaded (null / kernel-code 0x08 / kernel-data 0x10)
+[OK] IDT loaded (32 exception handlers with error codes + RIP + CR2, interrupts disabled)
 [OK] Kernel entered successfully!
 Hello from Ferrous!
 
-Memory map entries: 99
-[INFO] ACPI RSDP present
-[INFO] Framebuffer present
+[INFO] Physical memory map (99 entries):
+  [0] 0x1000 - 0xa0000  ...
+  ... (entries vary by QEMU version and RAM size)
+[INFO] RAM: 12543 MiB total | 204 MiB usable | 45 MiB reclaimable
 
-Kernel halting. Phase 1.2 (runtime setup) not yet implemented.
+[OK] Frame allocator initialised
+[INFO] Physical frames: 52306 free / 16777216 addressable (209224 KiB usable)
+[TEST] Allocating 3 frames...
+[OK]   frame[0] = 0x0
+[OK]   frame[1] = 0x1000
+[OK]   frame[2] = 0x2000
+[OK]   All frames are distinct
+[OK]   All frames are 4 KiB aligned
+[OK]   Deallocation restored free count (+3)
+[INFO] ACPI RSDP: 0xf77e014
+[INFO] Framebuffer: 1280x800 @ 0x80000000
+
+[...] Setting up kernel page tables
+[INFO] PML4 physical address: 0x<addr>
+[OK] CR3 loaded — kernel page tables active
+[OK] CR3 readback verified (0x<addr>)
+[INFO] Identity map: [0x0000000000000000, 0x0000000040000000)  1 GiB  2 MiB pages
+[INFO] Higher-half:  [0xffff800000000000, 0xffff800040000000) → same physical
+[OK] Higher-half alias verified (PML4[0] = 0x<value> via both windows)
+
+Kernel halting. Exception handlers active — any CPU exception will be caught.
 ```
+
+Addresses shown as `0x<addr>` vary per run depending on where UEFI loads the binary.
 
 ### Verification checklist
 
@@ -157,6 +178,13 @@ After running, confirm these lines appear in the output:
 - [ ] `kernel_entry: BootInfo validated`
 - [ ] `Kernel entered successfully!`
 - [ ] `Hello from Ferrous!`
+- [ ] `GDT loaded`
+- [ ] `IDT loaded`
+- [ ] `Frame allocator initialised`
+- [ ] `Deallocation restored free count (+3)`
+- [ ] `CR3 loaded — kernel page tables active`
+- [ ] `CR3 readback verified`
+- [ ] `Higher-half alias verified`
 
 The boot info magic (`0xfe220b00cafe0001`) must match exactly — it validates the `KernelBootInfo` ABI between bootloader and kernel.
 
@@ -353,18 +381,18 @@ Physical hardware testing has not been performed as of Phase 1.1. If you test on
 
 ---
 
-## Known Limitations (Phase 1.1)
+## Known Limitations (Phase 1, through 1.3.3)
 
-| Limitation | Detail |
-|------------|--------|
-| No GDT/IDT | Using UEFI's descriptor tables. Any exception triple-faults. |
-| No kernel heap | No memory allocation after handoff. |
-| Bootstrap stack only | 16 KiB, no guard page. Stack overflow is undetected. |
-| No interrupt handling | Hardware interrupts disabled (`cli` before jump). |
-| Single core | Only the boot processor is active. |
-| Halts immediately | After printing boot info, the kernel executes `hlt` forever. |
-
-These are all tracked in Phase 1.2 and 1.3 issues.
+| Limitation | Detail | Tracked |
+|------------|--------|---------|
+| No kernel heap | No `Box`/`Vec` — heap allocator not yet implemented. | Issue #20 (1.3.5) |
+| Identity map only | Kernel runs at identity-mapped VAs; full higher-half relocation pending. | Phase 2 |
+| 2 MiB page granularity | Page tables use huge pages; individual 4 KiB map/unmap not yet implemented. | Issue #19 (1.3.4) |
+| No logging framework | Serial output via raw `serial_write_str` helpers; structured logging pending. | Issue #21 (1.4.1) |
+| No panic source locations | Panic handler is a bare `hlt` loop; stack traces pending. | Issue #22 (1.4.2) |
+| Hardware interrupts disabled | `cli` executed before handoff; only CPU exceptions are caught. | Phase 2 (scheduler) |
+| Single core | Only the boot processor is active. | Phase 2+ |
+| Stack guard is soft | Guard region is zeroed BSS, not a non-present page. | Enforced once page management (1.3.4) is done |
 
 ---
 
