@@ -1,8 +1,8 @@
 # Ferrous Kernel - Memory Management Architecture
 
-**Version:** 0.3
-**Date:** 2026-05-01
-**Status:** Phase 1 In Progress (1.3.1 and 1.3.2 complete, 1.3.3-1.3.5 pending)
+**Version:** 0.4
+**Date:** 2026-05-02
+**Status:** Phase 1 In Progress (1.3.1, 1.3.2, and 1.3.3 complete, 1.3.4-1.3.5 pending)
 
 ---
 
@@ -584,15 +584,16 @@ pub enum MemoryError {
    - Phase 1 threading: single-core, interrupts disabled; `unsafe` API; Phase 2 adds spinlock
    - QEMU boot output confirms 52,311 free frames / 204 MiB usable; 3-frame smoke test passes
 
-3. **Set Up Kernel Page Tables** -- Phase 1.3.3/1.3.4 (pending)
-   - Identity map physical memory (temporary)
-   - Map kernel code/data sections
-   - Enable paging (CR0.PG = 1)
+3. **Set Up Kernel Page Tables** -- COMPLETE (Phase 1.3.3, PR #88)
+   - `kernel::memory::paging` added: `VirtualAddress` (canonical-form validated), `PhysicalAddress`, `PageTableEntry` + `flags` constants, `PageTable` ([PageTableEntry; 512], 4 KiB-aligned), `KernelPageTable` (Phase 1 mapper — PML4 + PDPT + PD inline)
+   - Phase 1 uses **2 MiB huge pages** (PS=1 in PD entries): `PML4[0]→PDPT[0]→PD[0..511]` covers [0, 1 GiB) identity; `PML4[256]→PDPT` creates higher-half alias at `0xFFFF_8000_0000_0000`
+   - Boot Step 7 (`setup_page_tables`) populates three raw 4 KiB BSS statics via raw pointer writes (`addr_of_mut!`), loads PML4 physical address into CR3 (`MOV CR3`)
+   - CR3 readback verified; higher-half alias confirmed via `read_volatile` through `0xFFFF_8000_...` VA; QEMU boot verification passes
+   - Note: identity map is permanent in Phase 1 (no linker script for kernel VMA yet); Phase 1.3.4 adds fine-grained 4 KiB page mappings
 
-4. **Switch to Higher-Half Kernel** -- Phase 1.3.3 (pending)
-   - Remap kernel to high virtual addresses (0xFFFF_8000_0000_0000+)
-   - Remove low-memory identity mapping
-   - Update all kernel pointers
+4. **Switch to Higher-Half Kernel** -- Deferred to Phase 2
+   - Phase 1 establishes the higher-half alias window but the kernel continues running at identity-mapped VAs (same binary, no linker-script VMA offset)
+   - Full higher-half switch (kernel loaded at `0xFFFF_8000_0000_0000`, low identity map removed) happens when the kernel becomes a separate ELF binary in Phase 2
 
 5. **Initialize Kernel Heap** -- Phase 1.3.5 (pending)
    - Allocate initial heap frames from physical allocator
@@ -611,16 +612,19 @@ pub enum MemoryError {
 |------|--------|-------|
 | UEFI memory map parsing | Complete (PR #64) | `MemoryMap`, `MemoryRegionKind`, `MemoryStats` in `ferrous-boot-info`; global `init`/`get` in `kernel::memory` |
 | Physical frame allocator (bitmap) | Complete (PR #87) | `BitmapFrameAllocator<262144>` in `ferrous-boot-info`; 2 MiB BSS bitmap; 52,311 free frames on QEMU |
-| Basic page table management (4 KB pages) | Pending (1.3.3/1.3.4) | x86-64 4-level PT; identity map then higher-half switch |
+| Basic page table management (2 MiB huge pages) | Complete (PR #88) | `VirtualAddress`, `PhysicalAddress`, `PageTableEntry`, `PageTable`, `KernelPageTable`; identity + higher-half alias confirmed on QEMU |
+| Fine-grained 4 KiB page mapping | Pending (1.3.4) | Walk existing tables, allocate PT frames, map/unmap individual pages |
 | Kernel heap allocator (linked list) | Pending (1.3.5) | Implements `GlobalAlloc`; migrate to buddy in Phase 2 |
-| Higher-half kernel address space | Pending (1.3.3) | Kernel at 0xFFFF_8000_0000_0000+ |
+| Higher-half kernel binary (Phase 2) | Pending | Full ELF relocation to `0xFFFF_8000_0000_0000`; remove identity map |
 
 **Success Criteria**:
 - [x] UEFI memory map parsed, classified, and accessible to all kernel subsystems
 - [x] Kernel can allocate and free physical frames
-- [ ] Kernel can create page tables and map pages
+- [x] Kernel owns its page tables (replaced UEFI firmware tables with Ferrous tables at boot)
+- [x] Higher-half window established at `0xFFFF_8000_0000_0000`
+- [ ] Kernel can map/unmap individual 4 KiB pages
 - [ ] Kernel heap allocation works (`Box`, `Vec` available)
-- [ ] Boot completes with paging enabled
+- [ ] Kernel binary loaded at higher-half VMA
 
 ### Phase 2: Process Memory
 

@@ -118,6 +118,114 @@ static mut KERNEL_BOOT_INFO: KernelBootInfo = KernelBootInfo::new();
 static mut FRAME_ALLOC: BitmapFrameAllocator<KERNEL_BITMAP_WORDS> = BitmapFrameAllocator::new();
 
 // ---------------------------------------------------------------------------
+// Page tables (Phase 1.3.3)
+//
+// Three raw 4 KiB page tables in BSS.  Populated by `setup_page_tables()`
+// during Step 7 of `kernel_main` (after the frame allocator is live).
+//
+// Layout after init:
+//   PML4[0]   → PDPT   (identity: VA [0, 1 GiB) = PA [0, 1 GiB))
+//   PML4[256] → PDPT   (higher-half alias: VA 0xFFFF_8000_... = PA 0x0...)
+//   PDPT[0]   → PD
+//   PD[0..511]→ 512 × 2 MiB huge pages  (PA i×2MiB, Present+Writable+PS)
+// ---------------------------------------------------------------------------
+
+/// Page present (P, bit 0).
+const PT_PRESENT: u64 = 1 << 0;
+/// Page writable (R/W, bit 1).
+const PT_WRITABLE: u64 = 1 << 1;
+/// Huge page / page size (PS, bit 7).  In a PD entry: maps a 2 MiB page.
+const PT_HUGE: u64 = 1 << 7;
+/// Mask for the physical address stored in a page table entry (bits [51:12]).
+const PT_PHYS_MASK: u64 = 0x000F_FFFF_FFFF_F000;
+
+/// A raw 4 KiB page table: 512 × 8-byte entries, 4 KiB-aligned.
+///
+/// The alignment guarantee means `addr_of!(PT_PML4) as u64` has its low 12
+/// bits clear — safe to write directly to CR3.
+#[repr(C, align(4096))]
+struct RawPageTable([u64; 512]);
+
+/// PML4 — the root of the kernel's page table hierarchy.
+///
+/// SAFETY: mutated exactly once in `setup_page_tables()` before CR3 is
+/// loaded.  Single-threaded, interrupts disabled throughout.
+#[allow(static_mut_refs)]
+static mut PT_PML4: RawPageTable = RawPageTable([0u64; 512]);
+
+/// PDPT — shared by the identity window (PML4[0]) and the higher-half alias
+/// (PML4[256]).
+#[allow(static_mut_refs)]
+static mut PT_PDPT: RawPageTable = RawPageTable([0u64; 512]);
+
+/// PD — 512 × 2 MiB huge-page entries covering [0, 1 GiB).
+#[allow(static_mut_refs)]
+static mut PT_PD: RawPageTable = RawPageTable([0u64; 512]);
+
+/// Build the kernel page tables and return the physical address of the PML4.
+///
+/// Under UEFI identity mapping every static lives at `VA == PA`, so the
+/// pointer value is both the virtual and the physical address.  After `CR3`
+/// is loaded with the returned value:
+///
+/// - `[0, 1 GiB)` is identity-mapped with 2 MiB huge pages (execution
+///   continues at the same virtual addresses — no jump required).
+/// - `[0xFFFF_8000_0000_0000, 0xFFFF_8000_4000_0000)` aliases the same
+///   physical range (higher-half window for Phase 2).
+///
+/// # Safety
+///
+/// - Must be called **exactly once**.
+/// - Must be called **single-threaded** with interrupts disabled.
+/// - UEFI identity mapping (`VA == PA`) must still be in effect.
+unsafe fn setup_page_tables() -> u64 {
+    // Obtain raw mutable pointers to the three table arrays.
+    // Using `addr_of_mut!` avoids creating Rust references to `static mut`
+    // (which would require `#[allow(static_mut_refs)]` and risks aliasing).
+    //
+    // Each pointer is to a `RawPageTable` which contains `[u64; 512]`, so
+    // casting to `*mut u64` is safe — `repr(C)` guarantees the array starts
+    // at offset 0.
+    let pml4 = core::ptr::addr_of_mut!(PT_PML4) as *mut u64;
+    let pdpt = core::ptr::addr_of_mut!(PT_PDPT) as *mut u64;
+    let pd = core::ptr::addr_of_mut!(PT_PD) as *mut u64;
+
+    // Zero all three tables.  BSS is already zeroed by the UEFI firmware,
+    // but we zero explicitly so the invariant is independent of the loader.
+    for i in 0..512usize {
+        pml4.add(i).write(0u64);
+        pdpt.add(i).write(0u64);
+        pd.add(i).write(0u64);
+    }
+
+    // PD: 512 × 2 MiB huge pages covering [0, 1 GiB).
+    //   Entry i maps physical address i × 2 MiB.
+    //   Flags: Present | Writable | HugePage (PS=1).
+    for i in 0..512usize {
+        let phys = (i as u64) * (2 * 1024 * 1024); // i × 2 MiB
+        pd.add(i)
+            .write((phys & PT_PHYS_MASK) | PT_PRESENT | PT_WRITABLE | PT_HUGE);
+    }
+
+    // PDPT[0] → PD.
+    let pd_phys = core::ptr::addr_of!(PT_PD) as u64; // VA == PA (UEFI)
+    pdpt.write((pd_phys & PT_PHYS_MASK) | PT_PRESENT | PT_WRITABLE);
+
+    // PML4[0] → PDPT  (identity window: VA 0 maps to PA 0).
+    let pdpt_phys = core::ptr::addr_of!(PT_PDPT) as u64;
+    pml4.write((pdpt_phys & PT_PHYS_MASK) | PT_PRESENT | PT_WRITABLE);
+
+    // PML4[256] → same PDPT  (higher-half alias: 0xFFFF_8000_0000_0000).
+    //
+    // Bits [47:39] of 0xFFFF_8000_0000_0000 = 0x100 = 256.
+    pml4.add(256)
+        .write((pdpt_phys & PT_PHYS_MASK) | PT_PRESENT | PT_WRITABLE);
+
+    // Return the physical address of PML4 — this goes directly into CR3.
+    core::ptr::addr_of!(PT_PML4) as u64
+}
+
+// ---------------------------------------------------------------------------
 // Panic handler
 // ---------------------------------------------------------------------------
 
@@ -626,6 +734,118 @@ fn kernel_main(boot_info: &KernelBootInfo) -> ! {
         serial_write_str(" @ 0x");
         serial_write_usize_hex(boot_info.framebuffer.base as usize);
         serial_write_str("\r\n");
+    }
+
+    // -----------------------------------------------------------------------
+    // Step 7: Build kernel page tables and switch CR3 (Phase 1.3.3).
+    //
+    // Replaces UEFI's firmware page tables with Ferrous's own minimal set:
+    //
+    //   PML4[0]   → PDPT → PD → 512 × 2 MiB huge pages  (identity [0, 1 GiB))
+    //   PML4[256] → PDPT                                  (higher-half alias)
+    //
+    // Because we identity-map [0, 1 GiB), the `MOV CR3` instruction and all
+    // subsequent loads/stores continue at the same virtual addresses — no
+    // far jump to a different VA is needed.
+    //
+    // After the switch we read CR3 back to confirm the value was accepted and
+    // then dereference a pointer through the higher-half window to prove that
+    // aliased mapping is live.
+    //
+    // SAFETY:
+    // - `setup_page_tables()` is called exactly once, single-threaded.
+    // - Interrupts are disabled (cli executed in efi_main).
+    // - UEFI identity mapping is still in effect (VA == PA for all statics).
+    // - Identity mapping covers [0, 1 GiB) ⊇ {current RIP, RSP, statics},
+    //   so execution is unaffected by the CR3 switch.
+    serial_write_str("\r\n[...] Setting up kernel page tables\r\n");
+
+    let pml4_phys = unsafe { setup_page_tables() };
+
+    serial_write_str("[INFO] PML4 physical address: 0x");
+    serial_write_usize_hex(pml4_phys as usize);
+    serial_write_str("\r\n");
+
+    // Load CR3 — installs our page tables and flushes the TLB.
+    //
+    // SAFETY: `pml4_phys` is the page-aligned physical address of a fully
+    // populated PML4.  The low 12 bits are zero (PWT=0, PCD=0 — write-back,
+    // cacheable).  Interrupts are disabled so no handler can fire with a
+    // partially-loaded CR3.
+    unsafe {
+        core::arch::asm!(
+            "mov cr3, {pml4}",
+            pml4 = in(reg) pml4_phys,
+            options(nostack),
+        );
+    }
+
+    serial_write_str("[OK] CR3 loaded — kernel page tables active\r\n");
+
+    // Read CR3 back and verify the CPU accepted our value.
+    //
+    // Reading CR3 returns the base address plus the PWT/PCD flag bits.  Since
+    // we wrote a page-aligned address with no flags, the readback must equal
+    // `pml4_phys` exactly.
+    let cr3_readback: u64;
+    unsafe {
+        core::arch::asm!(
+            "mov {cr3}, cr3",
+            cr3 = out(reg) cr3_readback,
+            options(nomem, nostack),
+        );
+    }
+
+    if cr3_readback == pml4_phys {
+        serial_write_str("[OK] CR3 readback verified (0x");
+        serial_write_usize_hex(cr3_readback as usize);
+        serial_write_str(")\r\n");
+    } else {
+        serial_write_str("[FAIL] CR3 readback mismatch! wrote 0x");
+        serial_write_usize_hex(pml4_phys as usize);
+        serial_write_str(" read 0x");
+        serial_write_usize_hex(cr3_readback as usize);
+        serial_write_str("\r\n");
+    }
+
+    // Print the mapped ranges.
+    serial_write_str(
+        "[INFO] Identity map: [0x0000000000000000, 0x0000000040000000)  1 GiB  2 MiB pages\r\n",
+    );
+    serial_write_str(
+        "[INFO] Higher-half:  [0xffff800000000000, 0xffff800040000000) → same physical\r\n",
+    );
+
+    // Probe the higher-half alias: read a u64 through the higher-half window
+    // and compare it to the same u64 read through the identity window.
+    //
+    // We use the first entry of PT_PML4 as the test target because:
+    //   - Its identity-map VA equals its PA (UEFI; unchanged after our CR3
+    //     load because identity mapping is preserved).
+    //   - Its higher-half VA = identity VA + 0xFFFF_8000_0000_0000.
+    //   - It was written by setup_page_tables(), so it is non-zero.
+    //
+    // SAFETY:
+    // - Both VAs are now mapped (identity + higher-half) after the CR3 switch.
+    // - We only read (no write) so the test cannot corrupt state.
+    let identity_va = core::ptr::addr_of!(PT_PML4) as u64;
+    let higher_half_va = identity_va.wrapping_add(0xFFFF_8000_0000_0000u64);
+
+    let val_identity: u64 = unsafe { (identity_va as *const u64).read_volatile() };
+    let val_higher: u64 = unsafe { (higher_half_va as *const u64).read_volatile() };
+
+    if val_identity == val_higher && val_identity != 0 {
+        serial_write_str("[OK] Higher-half alias verified (PML4[0] = 0x");
+        serial_write_usize_hex(val_identity as usize);
+        serial_write_str(" via both windows)\r\n");
+    } else if val_identity != val_higher {
+        serial_write_str("[FAIL] Higher-half alias mismatch: identity=0x");
+        serial_write_usize_hex(val_identity as usize);
+        serial_write_str(" higher=0x");
+        serial_write_usize_hex(val_higher as usize);
+        serial_write_str("\r\n");
+    } else {
+        serial_write_str("[WARN] Higher-half alias read zero — PML4[0] unexpectedly empty\r\n");
     }
 
     serial_write_str(

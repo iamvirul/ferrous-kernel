@@ -28,8 +28,16 @@
 //! [`ParseError`]) live in [`ferrous_boot_info`] so they can be tested on the
 //! host without targeting `x86_64-unknown-none`. They are re-exported here
 //! for ergonomic access within the kernel.
+//!
+//! # Sub-modules
+//!
+//! | Module              | Contents                                                  |
+//! |---------------------|-----------------------------------------------------------|
+//! | [`frame_allocator`] | Global physical frame allocator (bitmap-based)            |
+//! | [`paging`]          | Virtual memory — address types, page tables, mapper       |
 
 pub mod frame_allocator;
+pub mod paging;
 
 use core::mem::MaybeUninit;
 use core::sync::atomic::{AtomicBool, Ordering};
