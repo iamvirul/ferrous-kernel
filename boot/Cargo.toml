@@ -12,7 +12,7 @@ name = "ferrous-boot"
 path = "src/main.rs"
 
 [dependencies]
-uefi = { version = "0.33", features = ["alloc", "global_allocator", "logger"] }
+uefi = { version = "0.37", features = ["alloc", "global_allocator", "logger"] }
 log = { version = "0.4", default-features = false }
 ferrous-boot-info = { path = "../lib/boot-info" }
 
