@@ -590,7 +590,7 @@ pub enum MemoryError {
    - Boot Step 7 (`setup_page_tables`) populates three raw 4 KiB BSS statics via raw pointer writes (`addr_of_mut!`), loads PML4 physical address into CR3 (`MOV CR3`)
    - CR3 readback verified; higher-half alias confirmed via `read_volatile` through `0xFFFF_8000_...` VA; QEMU boot verification passes
 
-4. **Fine-Grained 4 KiB Page Mapping** -- COMPLETE (Phase 1.3.4, PR #TBD)
+4. **Fine-Grained 4 KiB Page Mapping** -- COMPLETE (Phase 1.3.4, PR #89)
    - `FrameAllocate` trait in `kernel::memory::paging::mapper` decouples page-walker from specific allocator
    - `ActivePageTable` type provides `map_4k`, `unmap_4k`, `translate` over the live CR3 tables
    - `MapError` (`OutOfMemory`, `AlreadyMapped`, `HugePageConflict`) and `UnmapError` (`NotMapped`, `HugePage`) as typed results
@@ -620,7 +620,7 @@ pub enum MemoryError {
 | UEFI memory map parsing | Complete (PR #64) | `MemoryMap`, `MemoryRegionKind`, `MemoryStats` in `ferrous-boot-info`; global `init`/`get` in `kernel::memory` |
 | Physical frame allocator (bitmap) | Complete (PR #87) | `BitmapFrameAllocator<262144>` in `ferrous-boot-info`; 2 MiB BSS bitmap; 52,311 free frames on QEMU |
 | Basic page table management (2 MiB huge pages) | Complete (PR #88) | `VirtualAddress`, `PhysicalAddress`, `PageTableEntry`, `PageTable`, `KernelPageTable`; identity + higher-half alias confirmed on QEMU |
-| Fine-grained 4 KiB page mapping | Complete (PR #TBD) | `ActivePageTable` with `map_4k`/`unmap_4k`/`translate`; `FrameAllocate` trait; `split_huge_pd`; `invlpg` + `flush_tlb_all`; guard page activated in boot Step 8 |
+| Fine-grained 4 KiB page mapping | Complete (PR #89) | `ActivePageTable` with `map_4k`/`unmap_4k`/`translate`; `FrameAllocate` trait; `split_huge_pd`; `invlpg` + `flush_tlb_all`; guard page activated in boot Step 8 |
 | Kernel heap allocator (linked list) | Pending (1.3.5) | Implements `GlobalAlloc`; migrate to buddy in Phase 2 |
 | Higher-half kernel binary (Phase 2) | Pending | Full ELF relocation to `0xFFFF_8000_0000_0000`; remove identity map |
 

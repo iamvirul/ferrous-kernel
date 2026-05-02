@@ -116,7 +116,7 @@ Every milestone must advance these core goals:
 | 1.3.1 Parse UEFI Memory Map | #10 | Complete (PR #64) |
 | 1.3.2 Physical Memory Allocator | #13 | Complete (PR #87) |
 | 1.3.3 Virtual Memory Setup | #14 | Complete (PR #88) |
-| 1.3.4 Page Table Management | #19 | Complete (PR #TBD) |
+| 1.3.4 Page Table Management | #19 | Complete (PR #89) |
 | 1.3.5 Kernel Heap Allocator | #20 | Not Started |
 
 #### 1.4 - Core Infrastructure
