@@ -37,6 +37,7 @@
 //! | [`paging`]          | Virtual memory — address types, page tables, mapper       |
 
 pub mod frame_allocator;
+pub mod heap;
 pub mod paging;
 
 use core::mem::MaybeUninit;

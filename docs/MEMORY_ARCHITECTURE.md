@@ -1,8 +1,8 @@
 # Ferrous Kernel - Memory Management Architecture
 
-**Version:** 0.5
-**Date:** 2026-05-02
-**Status:** Phase 1 In Progress (1.3.1–1.3.4 complete, 1.3.5 pending)
+**Version:** 0.6
+**Date:** 2026-05-14
+**Status:** Phase 1 In Progress (1.3.1–1.3.5 complete)
 
 ---
 
@@ -321,41 +321,61 @@ pub struct RegionFlags {
 
 ### Kernel Heap Allocator
 
-Global kernel heap for dynamic allocation (similar to `malloc`/`free`).
+Global kernel heap for dynamic allocation — enables `Vec`, `Box`, `String`, and any other `alloc` crate type throughout kernel code.
 
-**Design Considerations**:
-- Must work in `no_std` (implement `GlobalAlloc` trait)
-- Thread-safe (multiple cores accessing kernel heap)
-- Reasonable performance (not a bottleneck)
-- Clear failure modes (return `None` on OOM)
+**Design decisions (Phase 1.3.5, PR #100)**:
+- **BSS-backed storage**: `static mut HEAP_STORAGE: HeapStorage([u8; HEAP_SIZE])` (4 MiB, page-aligned, `repr(C, align(4096))`). Lives in BSS — zero binary overhead, zero-initialised by the UEFI firmware before the first instruction, and present at a fixed VA == PA throughout the boot sequence.
+- **Survives `exit_boot_services()`**: Unlike UEFI's pool allocator (torn down at EBS), our BSS buffer is ordinary physical RAM — unchanged by the UEFI transition. No re-initialisation needed in `kernel_main`.
+- **Algorithm**: first-fit linked list (`linked_list_allocator = "0.10"`). Appropriate for Phase 1–2; replace with slab/buddy in Phase 3+ when contention is measurable.
+- **Single allocator for all phases**: `init_heap()` is called once at the top of `efi_main`, before `print_memory_summary` (which uses `format!`). The same `LockedHeap` serves both the UEFI phase and post-EBS kernel execution.
+- **Thread safety**: `LockedHeap` uses a spin-lock. Safe in Phase 1 (single-core, interrupts disabled). In Phase 3+ ensure the lock is not held across interrupt handlers that may themselves allocate.
 
-**Implementation Options**:
-- **Linked List Allocator**: Simple but fragmented
-- **Fixed-Size Block Allocator**: Fast, limited flexibility
-- **Buddy Allocator**: Good balance (recommended)
-
-**Phase 1 Approach**: Start with simple linked list allocator, migrate to buddy allocator.
-
-**Rust Interface**:
+**Actual implementation** (`boot/src/main.rs`):
 ```rust
-// Implement GlobalAlloc for kernel heap
-pub struct KernelAllocator {
-    // ...
-}
+const HEAP_SIZE: usize = 4 * 1024 * 1024; // 4 MiB
 
-unsafe impl GlobalAlloc for KernelAllocator {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        // Allocate memory
-    }
-    
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        // Free memory
-    }
-}
+#[repr(C, align(4096))]
+struct HeapStorage([u8; HEAP_SIZE]);
+
+static mut HEAP_STORAGE: HeapStorage = HeapStorage([0u8; HEAP_SIZE]);
 
 #[global_allocator]
-static ALLOCATOR: KernelAllocator = KernelAllocator::new();
+static ALLOCATOR: LockedHeap = LockedHeap::empty();
+
+unsafe fn init_heap() {
+    let heap_start = core::ptr::addr_of_mut!(HEAP_STORAGE) as *mut u8;
+    ALLOCATOR.lock().init(heap_start, HEAP_SIZE);
+}
 ```
+
+**Canonical Phase 2 type** (`kernel/src/memory/heap.rs`):
+```rust
+pub struct KernelHeapAllocator {
+    inner: LockedHeap,
+}
+
+impl KernelHeapAllocator {
+    pub const fn empty() -> Self;
+    pub unsafe fn init(&self, heap_start: *mut u8, heap_size: usize);
+    pub fn free_bytes(&self) -> usize;
+    pub fn total_bytes(&self) -> usize;
+}
+
+unsafe impl GlobalAlloc for KernelHeapAllocator { /* alloc + dealloc via LockedHeap */ }
+```
+
+**Phase 1 smoke test** (Step 9, `kernel_main`):
+- `Vec<u64>`: 8 pushes, index and length verified
+- `Box<u64>`: alloc, deref, drop, re-alloc at same slot confirmed
+- `String`: `push_str`, length, `starts_with` verified
+
+**Future migration path**:
+
+| Phase | Planned change |
+|-------|----------------|
+| 3     | Per-CPU slab caches for common sizes (8 B – 4 KiB) |
+| 4     | NUMA-aware zone allocation; frame-reservation integration |
+| 5+    | Kernel-object allocator integrated with the capability system |
 
 ### User-Space Heap
 
@@ -598,14 +618,16 @@ pub enum MemoryError {
    - `invlpg` (single-VA TLB invalidation after each map/unmap) and `flush_tlb_all` (CR3 reload for bulk splits)
    - Boot Step 8 smoke test: (A) translate identity-mapped VA; (B) map/unmap round-trip at unmapped PML4[1] VA; (C) huge-page split activates KERNEL_STACK guard page (4 KiB non-present); QEMU boot verification passes
 
-5. **Switch to Higher-Half Kernel** -- Deferred to Phase 2
+5. **Initialize Kernel Heap** -- COMPLETE (Phase 1.3.5, PR #100)
+   - `linked_list_allocator::LockedHeap` installed as `#[global_allocator]` in the boot binary
+   - Backed by 4 MiB BSS buffer (`HEAP_STORAGE`) — page-aligned, zero cost in binary, valid throughout UEFI and post-EBS phases
+   - `init_heap()` called at the top of `efi_main` before any `alloc` usage; survives `exit_boot_services()` without re-initialisation
+   - `kernel/src/memory/heap.rs` defines `KernelHeapAllocator` (canonical Phase 2 type implementing `GlobalAlloc`)
+   - Boot Step 9 smoke test: `Vec<u64>`, `Box<u64>`, `String` all confirmed working in `kernel_main`
+
+6. **Switch to Higher-Half Kernel** -- Deferred to Phase 2
    - Phase 1 establishes the higher-half alias window but the kernel continues running at identity-mapped VAs (same binary, no linker-script VMA offset)
    - Full higher-half switch (kernel loaded at `0xFFFF_8000_0000_0000`, low identity map removed) happens when the kernel becomes a separate ELF binary in Phase 2
-
-5. **Initialize Kernel Heap** -- Phase 1.3.5 (pending)
-   - Allocate initial heap frames from physical allocator
-   - Set up linked-list allocator (Phase 1); migrate to buddy allocator (Phase 2)
-   - Enable `#[global_allocator]`
 
 ---
 
@@ -621,7 +643,7 @@ pub enum MemoryError {
 | Physical frame allocator (bitmap) | Complete (PR #87) | `BitmapFrameAllocator<262144>` in `ferrous-boot-info`; 2 MiB BSS bitmap; 52,311 free frames on QEMU |
 | Basic page table management (2 MiB huge pages) | Complete (PR #88) | `VirtualAddress`, `PhysicalAddress`, `PageTableEntry`, `PageTable`, `KernelPageTable`; identity + higher-half alias confirmed on QEMU |
 | Fine-grained 4 KiB page mapping | Complete (PR #89) | `ActivePageTable` with `map_4k`/`unmap_4k`/`translate`; `FrameAllocate` trait; `split_huge_pd`; `invlpg` + `flush_tlb_all`; guard page activated in boot Step 8 |
-| Kernel heap allocator (linked list) | Pending (1.3.5) | Implements `GlobalAlloc`; migrate to buddy in Phase 2 |
+| Kernel heap allocator (linked list) | Complete (PR #100) | 4 MiB BSS-backed `LockedHeap`; `#[global_allocator]` in boot binary; `KernelHeapAllocator` in `kernel::memory::heap` for Phase 2; `Vec`/`Box`/`String` confirmed in Step 9 smoke test |
 | Higher-half kernel binary (Phase 2) | Pending | Full ELF relocation to `0xFFFF_8000_0000_0000`; remove identity map |
 
 **Success Criteria**:
@@ -630,7 +652,7 @@ pub enum MemoryError {
 - [x] Kernel owns its page tables (replaced UEFI firmware tables with Ferrous tables at boot)
 - [x] Higher-half window established at `0xFFFF_8000_0000_0000`
 - [x] Kernel can map/unmap individual 4 KiB pages
-- [ ] Kernel heap allocation works (`Box`, `Vec` available)
+- [x] Kernel heap allocation works (`Box`, `Vec`, `String` available)
 - [ ] Kernel binary loaded at higher-half VMA
 
 ### Phase 2: Process Memory
