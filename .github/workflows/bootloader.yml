@@ -97,7 +97,7 @@ jobs:
           sudo apt-get install -y qemu-system-x86 ovmf
 
       - name: Download bootloader artifact
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v7
         with:
           name: ferrous-boot-efi
           path: bootloader
@@ -111,19 +111,40 @@ jobs:
       - name: Find OVMF firmware
         id: ovmf
         run: |
-          OVMF_CODE=$(find /usr -name "OVMF_CODE*.fd" 2>/dev/null | head -1)
-          if [ -z "$OVMF_CODE" ]; then
-            OVMF_CODE=$(find /usr -name "OVMF.fd" 2>/dev/null | head -1)
+          # Search common Ubuntu/Debian OVMF install paths in priority order.
+          for candidate in \
+            /usr/share/OVMF/OVMF_CODE.fd \
+            /usr/share/OVMF/OVMF_CODE_4M.fd \
+            /usr/share/edk2-ovmf/x64/OVMF_CODE.fd \
+            /usr/share/edk2/x64/OVMF_CODE.fd; do
+            if [ -f "$candidate" ]; then
+              echo "ovmf_code=$candidate" >> "$GITHUB_OUTPUT"
+              echo "OVMF firmware: $candidate"
+              exit 0
+            fi
+          done
+          # Fallback: recursive search
+          FOUND=$(find /usr/share -name "OVMF_CODE*.fd" 2>/dev/null | head -1)
+          if [ -n "$FOUND" ]; then
+            echo "ovmf_code=$FOUND" >> "$GITHUB_OUTPUT"
+            echo "OVMF firmware (fallback): $FOUND"
+          else
+            echo "::error::OVMF firmware not found — cannot run QEMU boot test"
+            exit 1
           fi
-          echo "OVMF firmware found at: $OVMF_CODE"
-          echo "ovmf_code=$OVMF_CODE" >> $GITHUB_OUTPUT
 
       - name: Run QEMU boot test
         run: |
-          # Start QEMU in background with timeout
-          timeout 30s qemu-system-x86_64 \
-            -enable-kvm \
-            -drive if=pflash,format=raw,readonly=on,file=${{ steps.ovmf.outputs.ovmf_code }} \
+          # Pre-create the log so the upload step never fails with "file not found".
+          touch serial.log
+
+          # GitHub Actions runners do not expose /dev/kvm — run in pure software
+          # emulation (TCG).  This is slower but correct.  120 s gives OVMF +
+          # Ferrous plenty of time; the kernel halts via `hlt` loop and QEMU
+          # keeps running until timeout kills it (exit 124 → suppressed by || true).
+          timeout 120s qemu-system-x86_64 \
+            -machine q35 \
+            -drive if=pflash,format=raw,readonly=on,file="${{ steps.ovmf.outputs.ovmf_code }}" \
             -drive format=raw,file=fat:rw:boot-disk \
             -m 256M \
             -serial file:serial.log \
@@ -131,14 +152,65 @@ jobs:
             -no-reboot || true
 
           echo "=== Serial Output ==="
-          cat serial.log || echo "No serial output captured"
+          cat serial.log
 
-          # Check if bootloader produced any output
-          if [ -f serial.log ] && [ -s serial.log ]; then
-            echo "Bootloader produced serial output"
+      - name: Verify boot output
+        run: |
+          # Every string in this list must appear in serial.log.
+          # A missing string fails the job and surfaces the gap clearly.
+          EXPECTED=(
+            # Phase 1.1 — bare metal boot
+            "=== Ferrous Kernel ==="
+            "kernel_entry: BootInfo validated"
+            "Kernel entered successfully!"
+            "Hello from Ferrous!"
+
+            # Phase 1.3.2 — physical frame allocator
+            "Frame allocator initialised"
+
+            # Phase 1.3.3 — virtual memory / page tables
+            "CR3 loaded — kernel page tables active"
+            "Higher-half alias verified"
+
+            # Phase 1.3.4 — page table management
+            "Page table management smoke test"
+            "[OK] A) translate:"
+            "[OK] B) map_4k at"
+            "[OK] B) unmap_4k succeeded"
+            "[OK] C) guard page translate -> None"
+
+            # Phase 1.3.5 — heap allocator
+            "[OK] 9.1) Vec<u64>: push/index/len verified"
+            "[OK] 9.2) Box<u64>: alloc/deref verified"
+            "[OK] 9.3) String: push_str/len/starts_with verified"
+
+            # Phase 1.4.1 — logging framework
+            "Logger: SerialLogger active (max_level=Debug)"
+            "[ERROR] ferrous_boot: smoke: error level"
+            "[WARN ] ferrous_boot: smoke: warn level"
+            "[INFO ] ferrous_boot: smoke: info level"
+            "[DEBUG] ferrous_boot: smoke: debug level"
+          )
+
+          FAILED=0
+          for s in "${EXPECTED[@]}"; do
+            if grep -qF "$s" serial.log; then
+              echo "[PASS] $s"
+            else
+              echo "[FAIL] NOT FOUND: $s"
+              FAILED=1
+            fi
+          done
+
+          # Confirm trace is absent (filtered by Debug ceiling).
+          if grep -qF "smoke: trace level" serial.log; then
+            echo "[FAIL] TRACE record appeared — should be filtered at Debug"
+            FAILED=1
           else
-            echo "Note: Bootloader uses UEFI console, not serial. Build verified."
+            echo "[PASS] trace record correctly absent"
           fi
+
+          exit $FAILED
 
       - name: Upload serial log
         uses: actions/upload-artifact@v7
@@ -146,7 +218,7 @@ jobs:
         with:
           name: qemu-serial-log
           path: serial.log
-          retention-days: 3
+          retention-days: 7
 
   docs:
     name: Documentation
