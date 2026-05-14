@@ -1,6 +1,6 @@
 # Ferrous Kernel - Development Roadmap
 
-**Last Updated:** 2026-05-02
+**Last Updated:** 2026-05-14
 **Status:** Phase 1 — Proof of Life (In Progress)
 
 ---
@@ -99,6 +99,11 @@ Every milestone must advance these core goals:
 - `boot/src/main.rs` kernel_main Step 7 — `setup_page_tables()` builds 3-level hierarchy (PML4→PDPT→PD) with 512 × 2 MiB huge pages covering [0, 1 GiB) identity + PML4[256] higher-half alias at 0xFFFF_8000_0000_0000; `MOV CR3` loads our tables; CR3 readback verified; higher-half alias probed via `read_volatile` (PML4[0]=0xde1d023 matching through both windows); QEMU boot verification passes
 - `kernel/src/memory/paging/mapper.rs` rewritten for Phase 1.3.4 — `FrameAllocate` trait decouples mapper from allocator; `ActivePageTable` provides `map_4k`, `unmap_4k`, `translate` over the live CR3 tables; `MapError`/`UnmapError` typed results; `split_huge_pd` automatically splits 2 MiB PD entries when `map_4k` targets a 4 KiB page within a huge region; `invlpg` + `flush_tlb_all` for TLB management; `iter_mut` added to `PageTable`; all types re-exported from `kernel::memory::paging`
 - `boot/src/main.rs` kernel_main Step 8 — inline smoke test (boot crate does not depend on kernel crate): (A) translate confirms identity-mapped VA resolves to same PA; (B) map_4k + translate + unmap_4k round-trip at unmapped PML4[1] VA; (C) huge-page split on the 2 MiB region covering KERNEL_STACK bottom — guard 4 KiB marked non-present, translate → None confirmed; QEMU boot verification passes
+- `linked_list_allocator = "0.10"` added as dependency to `boot` and `kernel` crates; `uefi`'s `global_allocator` feature removed — `uefi`'s built-in allocator is invalid after `exit_boot_services()` and replaced by our own
+- `HEAP_STORAGE` (4 MiB, page-aligned, BSS — zero binary overhead) + `#[global_allocator] LockedHeap` installed in `boot/src/main.rs`; `init_heap()` called at top of `efi_main` before any `alloc` usage (including `format!` in `print_memory_summary`)
+- BSS heap survives `exit_boot_services()` — physical RAM unaffected by UEFI pool teardown; no re-initialisation needed in `kernel_main`
+- `kernel/src/memory/heap.rs` added — `KernelHeapAllocator` struct (`const empty()`, `unsafe init()`, `GlobalAlloc` impl via `LockedHeap`) for Phase 2 standalone kernel binary; `pub mod heap` exposed from `kernel::memory`
+- `boot/src/main.rs` kernel_main Step 9 smoke test: `Vec<u64>` push/index/len; `Box<u64>` alloc/deref/drop/re-alloc; `String` push_str/len/starts_with; all pass
 
 #### 1.2 - Runtime Setup
 
@@ -117,7 +122,7 @@ Every milestone must advance these core goals:
 | 1.3.2 Physical Memory Allocator | #13 | Complete (PR #87) |
 | 1.3.3 Virtual Memory Setup | #14 | Complete (PR #88) |
 | 1.3.4 Page Table Management | #19 | Complete (PR #89) |
-| 1.3.5 Kernel Heap Allocator | #20 | Not Started |
+| 1.3.5 Kernel Heap Allocator | #20 | Complete (PR #100) |
 
 #### 1.4 - Core Infrastructure
 
@@ -133,6 +138,7 @@ Every milestone must advance these core goals:
 - [x] Kernel boots on QEMU x86_64
 - [x] Can print "Hello from Ferrous!" to serial console
 - [x] Page fault handler catches and reports violations
+- [x] Kernel heap allocation works (`Vec`, `Box`, `String` available)
 - [ ] Clean panic messages with source locations
 
 ---
