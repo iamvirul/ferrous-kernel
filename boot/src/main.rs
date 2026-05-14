@@ -22,6 +22,7 @@ mod console;
 mod memory;
 
 use core::fmt::Write;
+use linked_list_allocator::LockedHeap;
 use uefi::boot::MemoryType;
 use uefi::prelude::*;
 
@@ -161,6 +162,75 @@ static mut PT_PDPT: RawPageTable = RawPageTable([0u64; 512]);
 /// PD — 512 × 2 MiB huge-page entries covering [0, 1 GiB).
 #[allow(static_mut_refs)]
 static mut PT_PD: RawPageTable = RawPageTable([0u64; 512]);
+
+// ---------------------------------------------------------------------------
+// Kernel heap (Phase 1.3.5)
+//
+// A BSS-backed heap that replaces the UEFI global allocator after
+// `exit_boot_services()`.  The `uefi` crate's `global_allocator` feature is
+// removed from Cargo.toml; this `LockedHeap` is the one and only
+// `#[global_allocator]` for the binary.
+//
+// Layout:
+//   HEAP_STORAGE — 4 MiB, page-aligned, zero-initialised in BSS.
+//                  Backed by physical RAM but never touched by UEFI's own
+//                  allocator, so it remains valid after exit_boot_services().
+//   ALLOCATOR    — `LockedHeap::empty()` until `init_heap()` is called at
+//                  the top of `efi_main`, before any alloc operation.
+//
+// Why BSS and not a UEFI-allocated region?
+//   • Zero overhead in the binary image (BSS is not stored on disk).
+//   • Guaranteed to be present before the first Rust instruction runs.
+//   • UEFI firmware zero-initialises BSS, so the allocator's internal
+//     free-list is clean before `init` writes its header.
+//   • Lives at a fixed VA == PA (identity mapped), so the pointer is valid
+//     both before and after the CR3 switch in Step 7.
+// ---------------------------------------------------------------------------
+
+/// Heap size in bytes (4 MiB).
+///
+/// Adequate for all Phase 1 smoke tests (Vec, Box, String) and provides
+/// headroom for Phase 2 kernel data structures.  Stored in BSS — no binary
+/// size impact.
+const HEAP_SIZE: usize = 4 * 1024 * 1024;
+
+/// Backing storage for the kernel heap.
+///
+/// `repr(C, align(4096))` ensures the buffer is page-aligned so the allocator
+/// is compatible with any future page-granularity guard policy.
+///
+/// SAFETY: written only by `linked_list_allocator::LockedHeap::init` (called
+/// once from `init_heap`) and thereafter managed exclusively by the allocator.
+#[repr(C, align(4096))]
+struct HeapStorage([u8; HEAP_SIZE]);
+
+static mut HEAP_STORAGE: HeapStorage = HeapStorage([0u8; HEAP_SIZE]);
+
+/// The global heap allocator.
+///
+/// Starts empty; `init_heap()` must be called before the first allocation.
+/// `LockedHeap` uses a spin-lock internally, making it safe in a pre-SMP
+/// kernel where re-entrancy can only occur through interrupt handlers (which
+/// are disabled throughout Phase 1).
+#[global_allocator]
+static ALLOCATOR: LockedHeap = LockedHeap::empty();
+
+/// Initialise the global heap allocator from the BSS-backed `HEAP_STORAGE`.
+///
+/// Must be called exactly once, at the very top of `efi_main`, before any
+/// code that uses `alloc` (Vec, Box, format!, etc.).
+///
+/// # Safety
+///
+/// - Single-threaded context required (always true in early UEFI boot).
+/// - `HEAP_STORAGE` must not have been touched by any allocator before this
+///   call (guaranteed — it is a fresh BSS region).
+unsafe fn init_heap() {
+    let heap_start = core::ptr::addr_of_mut!(HEAP_STORAGE) as *mut u8;
+    // SAFETY: heap_start points to HEAP_SIZE bytes of writable, zero-
+    // initialised BSS that no other code has accessed.  Called exactly once.
+    ALLOCATOR.lock().init(heap_start, HEAP_SIZE);
+}
 
 /// Build the kernel page tables and return the physical address of the PML4.
 ///
@@ -498,6 +568,13 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
 
 #[entry]
 fn efi_main() -> Status {
+    // Initialise the heap allocator before any alloc usage.
+    //
+    // SAFETY: single-threaded UEFI entry; HEAP_STORAGE is untouched BSS;
+    // called exactly once before the first Vec/Box/format! anywhere in this
+    // binary.
+    unsafe { init_heap() };
+
     uefi::helpers::init().expect("Failed to initialize UEFI helpers");
 
     let mut console = Console::new();
@@ -1258,6 +1335,69 @@ fn kernel_main(boot_info: &KernelBootInfo) -> ! {
     }
 
     serial_write_str("[OK] Page table management smoke test complete\r\n");
+
+    // -----------------------------------------------------------------------
+    // Step 9: Kernel heap allocator smoke test (Phase 1.3.5).
+    //
+    // The heap was initialised at the top of `efi_main` (before
+    // exit_boot_services) from a BSS-backed 4 MiB buffer.  The UEFI
+    // allocator's `global_allocator` feature has been removed; our
+    // `LockedHeap` is the single `#[global_allocator]` for this binary.
+    //
+    // After exit_boot_services the UEFI memory pool is gone, but our BSS
+    // buffer is physical RAM that persists.  Allocations from `kernel_main`
+    // therefore work without any re-initialisation.
+    //
+    // Three sub-tests cover the alloc surface needed by Phase 1 kernel code:
+    //   9.1  Vec<u64>  — grow-on-push, index, length check, automatic drop.
+    //   9.2  Box<u64>  — single heap object, deref, explicit drop + reuse.
+    //   9.3  String    — heap-backed text, push_str, length check.
+    serial_write_str("\r\n[...] Heap allocator smoke test\r\n");
+
+    // --- Test 9.1: Vec<u64> ---
+    {
+        let mut v: alloc::vec::Vec<u64> = alloc::vec::Vec::new();
+        for i in 0u64..8 {
+            v.push(i * i); // 0, 1, 4, 9, 16, 25, 36, 49
+        }
+        if v.len() == 8 && v[0] == 0 && v[7] == 49 {
+            serial_write_str("[OK] 9.1) Vec<u64>: push/index/len verified\r\n");
+        } else {
+            serial_write_str("[FAIL] 9.1) Vec<u64>: unexpected value or length\r\n");
+        }
+        // `v` is dropped here — memory returned to the allocator.
+    }
+
+    // --- Test 9.2: Box<u64> ---
+    {
+        const MAGIC: u64 = 0xFE_00_05_00_0C_0F_FE_E5; // "FERROUS COFFEE"
+        let b = alloc::boxed::Box::new(MAGIC);
+        if *b == MAGIC {
+            serial_write_str("[OK] 9.2) Box<u64>: alloc/deref verified\r\n");
+        } else {
+            serial_write_str("[FAIL] 9.2) Box<u64>: value mismatch after deref\r\n");
+        }
+        drop(b);
+        // Allocate again at the same spot to confirm the deallocator is wired up.
+        let b2 = alloc::boxed::Box::new(0u64);
+        drop(b2);
+        serial_write_str("[OK] 9.2) Box<u64>: drop + re-alloc confirmed\r\n");
+    }
+
+    // --- Test 9.3: String ---
+    {
+        let mut s = alloc::string::String::new();
+        s.push_str("Ferrous");
+        s.push_str("Kernel");
+        if s.len() == 13 && s.starts_with("Ferrous") {
+            serial_write_str("[OK] 9.3) String: push_str/len/starts_with verified\r\n");
+        } else {
+            serial_write_str("[FAIL] 9.3) String: unexpected content or length\r\n");
+        }
+        // `s` dropped here.
+    }
+
+    serial_write_str("[OK] Heap allocator smoke test complete\r\n");
 
     serial_write_str(
         "\r\nKernel halting. Exception handlers active — any CPU exception will be caught.\r\n",

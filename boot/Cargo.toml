@@ -12,9 +12,10 @@ name = "ferrous-boot"
 path = "src/main.rs"
 
 [dependencies]
-uefi = { version = "0.33", features = ["alloc", "global_allocator", "logger"] }
+uefi = { version = "0.33", features = ["alloc", "logger"] }
 log = { version = "0.4", default-features = false }
 ferrous-boot-info = { path = "../lib/boot-info" }
+linked_list_allocator = "0.10"
 
 # Boot code requires unsafe for UEFI interface, so we don't inherit workspace lints
 [lints.rust]
