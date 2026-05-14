@@ -576,6 +576,23 @@ fn efi_main() -> Status {
     // binary.
     unsafe { init_heap() };
 
+    // Install the serial logger as the one global logger for the entire
+    // binary lifetime (pre-EBS and post-EBS).
+    //
+    // This must happen BEFORE `uefi::helpers::init()`. The uefi crate's
+    // `logger` feature has been removed from Cargo.toml so uefi no longer
+    // calls `log::set_logger` itself. Calling `logger::init` here means:
+    //   - `log::set_logger_racy` succeeds (slot is empty).
+    //   - All `log::*!` macros in efi_main route to COM1.
+    //   - After exit_boot_services() the same logger is still installed;
+    //     no swap is needed.
+    //
+    // SAFETY: single-threaded; COM1 is accessible at any privilege level
+    // from the start of execution; serial_init() will reconfigure the UART
+    // later (Step 2 of kernel_main) but the port is already usable at
+    // UEFI's default baud rate for our purposes here.
+    unsafe { logger::init(log::LevelFilter::Debug) };
+
     uefi::helpers::init().expect("Failed to initialize UEFI helpers");
 
     let mut console = Console::new();
@@ -1401,43 +1418,29 @@ fn kernel_main(boot_info: &KernelBootInfo) -> ! {
     serial_write_str("[OK] Heap allocator smoke test complete\r\n");
 
     // -----------------------------------------------------------------------
-    // Step 10: Kernel logger initialisation (Phase 1.4.1).
+    // Step 10: Kernel logger smoke test (Phase 1.4.1).
     //
-    // The UEFI logger (installed by `uefi::helpers::init()`) is invalid after
-    // `exit_boot_services()`.  We install our own `SerialLogger` — a
-    // `log::Log` implementation that formats records as:
+    // The SerialLogger was installed at the very top of `efi_main` (before
+    // uefi::helpers::init), making it the sole global logger for the entire
+    // binary lifetime.  The uefi crate's `logger` feature has been removed so
+    // no UEFI logger is ever registered — our logger owns the slot.
     //
-    //   [LEVEL] <target>: <message>
+    // After exit_boot_services() the same logger is still installed; no swap
+    // is needed.  Logging now goes directly to COM1 (re-initialised in Step 2).
     //
-    // and writes them to COM1 via the already-initialised UART (Step 2).
-    //
-    // `log::set_logger_racy` is used (unsafe, non-atomic) because the safe
-    // `set_logger` path would fail — the UEFI logger was already registered.
-    // Single-threaded, interrupts-disabled Phase 1 makes racy access safe.
-    //
-    // After `init`, all five log macros are wired to serial:
-    //   log::error!, log::warn!, log::info!, log::debug!, log::trace!
-    //
-    // Max level at runtime: Debug (Trace records are discarded).
-    // SAFETY: COM1 initialised in Step 2; single-threaded Phase 1.
-    serial_write_str("\r\n[...] Initialising kernel logger\r\n");
-
-    unsafe { logger::init(log::LevelFilter::Debug) };
-
-    serial_write_str("[OK] Kernel logger active (max_level=Debug)\r\n");
-
-    // --- Logger smoke test: emit one record at each supported level ---
-    //
-    // Expected serial output (Trace is filtered out at the Debug ceiling):
+    // This step exercises all five log levels and format-string interpolation.
+    // Expected serial output (Trace is filtered at the Debug ceiling):
     //
     //   [ERROR] ferrous_boot: smoke: error level
     //   [WARN ] ferrous_boot: smoke: warn level
     //   [INFO ] ferrous_boot: smoke: info level
     //   [DEBUG] ferrous_boot: smoke: debug level
+    //   [INFO ] ferrous_boot: heap: 4096 KiB BSS-backed, allocator live
     //
-    // The target `ferrous_boot` comes from the Rust module path of this
-    // call site (the `log` crate uses `module_path!()` by default).
-    serial_write_str("[...] Logger smoke test — five levels\r\n");
+    // `ferrous_boot` is the crate name that `module_path!()` resolves to at
+    // this call site.  Trace is absent — filtered at the Debug max level.
+    serial_write_str("\r\n[...] Kernel logger smoke test\r\n");
+    serial_write_str("[INFO] Logger: SerialLogger active (max_level=Debug)\r\n");
 
     log::error!("smoke: error level");
     log::warn!("smoke: warn level");
@@ -1445,11 +1448,11 @@ fn kernel_main(boot_info: &KernelBootInfo) -> ! {
     log::debug!("smoke: debug level");
     log::trace!("smoke: trace level (must NOT appear — filtered at Debug)");
 
-    // Verify format-string interpolation works end-to-end.
+    // Format-string interpolation — proves args are evaluated and formatted.
     let heap_size_kb = HEAP_SIZE / 1024;
     log::info!("heap: {} KiB BSS-backed, allocator live", heap_size_kb);
 
-    serial_write_str("[OK] Logger smoke test complete\r\n");
+    serial_write_str("[OK] Kernel logger smoke test complete\r\n");
 
     serial_write_str(
         "\r\nKernel halting. Exception handlers active — any CPU exception will be caught.\r\n",

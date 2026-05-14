@@ -143,10 +143,40 @@ create_boot_disk() {
 # Strings that must appear in serial output for the boot to be considered
 # successful. Order does not matter — all must be present.
 EXPECTED_STRINGS=(
+    # Phase 1.1 — bare metal boot
     "=== Ferrous Kernel ==="
     "kernel_entry: BootInfo validated"
     "Kernel entered successfully!"
     "Hello from Ferrous!"
+
+    # Phase 1.3.2 — physical frame allocator
+    "Frame allocator initialised"
+    "free /"
+
+    # Phase 1.3.3 — virtual memory / page tables
+    "CR3 loaded — kernel page tables active"
+    "Higher-half alias verified"
+
+    # Phase 1.3.4 — page table management
+    "Page table management smoke test"
+    "[OK] A) translate:"
+    "[OK] B) map_4k at"
+    "[OK] B) unmap_4k succeeded"
+    "[OK] C) guard page translate -> None"
+
+    # Phase 1.3.5 — heap allocator
+    "Heap allocator smoke test"
+    "[OK] 9.1) Vec<u64>: push/index/len verified"
+    "[OK] 9.2) Box<u64>: alloc/deref verified"
+    "[OK] 9.3) String: push_str/len/starts_with verified"
+
+    # Phase 1.4.1 — logging framework
+    "Logger: SerialLogger active (max_level=Debug)"
+    "[ERROR] ferrous_boot: smoke: error level"
+    "[WARN ] ferrous_boot: smoke: warn level"
+    "[INFO ] ferrous_boot: smoke: info level"
+    "[DEBUG] ferrous_boot: smoke: debug level"
+    "[INFO ] ferrous_boot: heap:"
 )
 
 run_and_verify() {
