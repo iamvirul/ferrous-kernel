@@ -19,6 +19,7 @@ extern crate alloc;
 
 mod boot_info;
 mod console;
+mod logger;
 mod memory;
 
 use core::fmt::Write;
@@ -1398,6 +1399,57 @@ fn kernel_main(boot_info: &KernelBootInfo) -> ! {
     }
 
     serial_write_str("[OK] Heap allocator smoke test complete\r\n");
+
+    // -----------------------------------------------------------------------
+    // Step 10: Kernel logger initialisation (Phase 1.4.1).
+    //
+    // The UEFI logger (installed by `uefi::helpers::init()`) is invalid after
+    // `exit_boot_services()`.  We install our own `SerialLogger` — a
+    // `log::Log` implementation that formats records as:
+    //
+    //   [LEVEL] <target>: <message>
+    //
+    // and writes them to COM1 via the already-initialised UART (Step 2).
+    //
+    // `log::set_logger_racy` is used (unsafe, non-atomic) because the safe
+    // `set_logger` path would fail — the UEFI logger was already registered.
+    // Single-threaded, interrupts-disabled Phase 1 makes racy access safe.
+    //
+    // After `init`, all five log macros are wired to serial:
+    //   log::error!, log::warn!, log::info!, log::debug!, log::trace!
+    //
+    // Max level at runtime: Debug (Trace records are discarded).
+    // SAFETY: COM1 initialised in Step 2; single-threaded Phase 1.
+    serial_write_str("\r\n[...] Initialising kernel logger\r\n");
+
+    unsafe { logger::init(log::LevelFilter::Debug) };
+
+    serial_write_str("[OK] Kernel logger active (max_level=Debug)\r\n");
+
+    // --- Logger smoke test: emit one record at each supported level ---
+    //
+    // Expected serial output (Trace is filtered out at the Debug ceiling):
+    //
+    //   [ERROR] ferrous_boot: smoke: error level
+    //   [WARN ] ferrous_boot: smoke: warn level
+    //   [INFO ] ferrous_boot: smoke: info level
+    //   [DEBUG] ferrous_boot: smoke: debug level
+    //
+    // The target `ferrous_boot` comes from the Rust module path of this
+    // call site (the `log` crate uses `module_path!()` by default).
+    serial_write_str("[...] Logger smoke test — five levels\r\n");
+
+    log::error!("smoke: error level");
+    log::warn!("smoke: warn level");
+    log::info!("smoke: info level");
+    log::debug!("smoke: debug level");
+    log::trace!("smoke: trace level (must NOT appear — filtered at Debug)");
+
+    // Verify format-string interpolation works end-to-end.
+    let heap_size_kb = HEAP_SIZE / 1024;
+    log::info!("heap: {} KiB BSS-backed, allocator live", heap_size_kb);
+
+    serial_write_str("[OK] Logger smoke test complete\r\n");
 
     serial_write_str(
         "\r\nKernel halting. Exception handlers active — any CPU exception will be caught.\r\n",
