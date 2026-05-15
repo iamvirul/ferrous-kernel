@@ -177,6 +177,12 @@ EXPECTED_STRINGS=(
     "[INFO ] ferrous_boot: smoke: info level"
     "[DEBUG] ferrous_boot: smoke: debug level"
     "[INFO ] ferrous_boot: heap:"
+
+    # Phase 1.4.2 — panic handler with stack traces
+    "Panic handler smoke test"
+    "panic: handler installed (stack trace support enabled)"
+    "[TRACE] Stack trace (RBP chain):"
+    "Panic handler smoke test complete"
 )
 
 run_and_verify() {
