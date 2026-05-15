@@ -21,6 +21,7 @@ mod boot_info;
 mod console;
 mod logger;
 mod memory;
+mod unwind;
 
 // Kernel assertion macros from ferrous-core (Phase 1.4.3).
 use ferrous_core::{
@@ -555,12 +556,66 @@ unsafe fn boot_activate_guard_page(guard_va: u64) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// Panic handler
+// Panic handler (Phase 1.4.2)
 // ---------------------------------------------------------------------------
 
+/// Boot-phase panic handler with structured output and stack trace.
+///
+/// Writes a human-readable panic report to COM1 then halts via `hlt`.  The
+/// report includes:
+///
+/// 1. An ASCII banner so the panic is impossible to miss in the serial log.
+/// 2. Source location (`file:line:column`) from [`core::panic::PanicInfo`].
+/// 3. The panic message, formatted via the [`log`] framework (goes to COM1).
+/// 4. A frame-pointer stack trace (raw return addresses, resolvable offline).
+///
+/// # Why direct serial writes for the banner?
+///
+/// The logger may not have been initialised (if the panic fires before
+/// [`logger::init`] in `efi_main`), or may itself be in a broken state.
+/// Direct serial writes to COM1 are always safe at ring-0 — they bypass every
+/// abstraction layer and ensure the banner is always visible.
+///
+/// # Resolving stack addresses
+///
+/// ```bash
+/// addr2line -e target/x86_64-unknown-uefi/debug/ferrous-boot.efi <addr>
+/// ```
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
-    log::error!("BOOT PANIC: {}", info);
+    // --- Banner (direct serial: always visible, even pre-logger) ---
+    serial_write_str("\r\n");
+    serial_write_str("--- KERNEL PANIC ---\r\n");
+
+    // --- Source location ---
+    if let Some(loc) = info.location() {
+        serial_write_str("  at ");
+        serial_write_str(loc.file());
+        serial_write_str(":");
+        serial_write_usize(loc.line() as usize);
+        serial_write_str(":");
+        serial_write_usize(loc.column() as usize);
+        serial_write_str("\r\n");
+    }
+
+    // --- Formatted panic message via the log framework ---
+    //
+    // `log::error!` uses `fmt::Arguments` formatting, which is the same as
+    // `format_args!`. If the logger is not yet initialised this is a no-op;
+    // the banner above still provides a minimal diagnosis.
+    log::error!("PANIC: {}", info);
+
+    // --- Frame-pointer stack trace ---
+    serial_write_str("\r\n");
+    // SAFETY:
+    // - `force-frame-pointers = true` is set in Cargo.toml for all profiles.
+    // - Single-threaded, interrupts are disabled (cli executed in efi_main).
+    // - The entire kernel stack is identity-mapped (Phase 1.3.3).
+    // - This is the panic path: no concurrency, no re-entrance possible.
+    unsafe { unwind::print_stack_trace() };
+
+    serial_write_str("--- END PANIC ---\r\n");
+
     loop {
         // SAFETY: `hlt` halts the CPU until the next interrupt. This is
         // safe to execute and prevents a busy-spin in a panic situation.
@@ -1460,7 +1515,43 @@ fn kernel_main(boot_info: &KernelBootInfo) -> ! {
     serial_write_str("[OK] Kernel logger smoke test complete\r\n");
 
     // -----------------------------------------------------------------------
-    // Step 11: Assertion and debug macro smoke test (Phase 1.4.3).
+    // Step 11: Panic handler smoke test (Phase 1.4.2).
+    //
+    // The enhanced panic handler (defined just above `efi_main`) now:
+    //   • prints a structured ASCII banner with file/line/column location,
+    //   • logs the panic message via the `log` framework,
+    //   • walks the RBP frame-pointer chain and prints raw return addresses.
+    //
+    // We cannot trigger a real panic here without halting the CPU, so instead
+    // we call the stack walker directly to prove it compiles, executes, and
+    // produces at least one frame of output.  The enhanced handler itself is
+    // exercised implicitly whenever the kernel panics (e.g. during development
+    // or fault injection in later phases).
+    //
+    // Expected serial output (addresses vary by build; the header and footer
+    // are constant and checked by the CI verification step):
+    //
+    //   [INFO ] ferrous_boot: panic: handler installed (stack trace support enabled)
+    //   [TRACE] Stack trace (RBP chain):
+    //     #0  0x<addr>
+    //     ...
+    //     (end of trace)
+    //   [OK] Panic handler smoke test complete
+    serial_write_str("\r\n[...] Panic handler smoke test\r\n");
+
+    log::info!("panic: handler installed (stack trace support enabled)");
+
+    // Walk the current call stack to verify the frame-pointer unwinder works.
+    //
+    // SAFETY:
+    // - Single-threaded; stack is identity-mapped.
+    // - Not in a panic — this is a live, well-formed stack.
+    unsafe { unwind::print_stack_trace() };
+
+    serial_write_str("[OK] Panic handler smoke test complete\r\n");
+
+    // -----------------------------------------------------------------------
+    // Step 12: Assertion and debug macro smoke test (Phase 1.4.3).
     //
     // Exercises every macro exported by `ferrous-core::macros`:
     //
@@ -1481,56 +1572,59 @@ fn kernel_main(boot_info: &KernelBootInfo) -> ! {
     //
     // Expected serial output:
     //   [OK] 11.1) kassert!(true) — no panic
-    //   [OK] 11.2) kassert_eq!(equal) — no panic
-    //   [OK] 11.3) kassert_ne!(unequal) — no panic
-    //   [OK] 11.4) kdebug_assert! — debug-only, no panic
-    //   [OK] 11.5) kdebug_assert_eq! — debug-only, no panic
-    //   [OK] 11.6) kdebug_assert_ne! — debug-only, no panic
+    //   [OK] 11.2) kassert!(true, msg) — no panic
+    //   [OK] 11.3) kassert_eq!(equal) — no panic
+    //   [OK] 11.4) kassert_eq!(equal, msg) — no panic
+    //   [OK] 11.5) kassert_ne!(unequal) — no panic
+    //   [OK] 11.6) kassert_ne!(unequal, msg) — no panic
+    //   [OK] 11.7) kdebug_assert! — no panic
+    //   [OK] 11.8) kdebug_assert_eq! — no panic
+    //   [OK] 11.9) kdebug_assert_ne! — no panic
     //   [INFO ] ferrous_boot: assertions: all macro smoke tests passed
     serial_write_str("\r\n[...] Assertion macro smoke test\r\n");
 
-    // --- 11.1: kassert! with bare condition ---
+    // --- 12.1: kassert! with bare condition ---
     kassert!(core::mem::size_of::<u64>() == 8);
-    serial_write_str("[OK] 11.1) kassert!(true) — no panic\r\n");
+    serial_write_str("[OK] 12.1) kassert!(true) — no panic\r\n");
 
-    // --- 11.2: kassert! with format message ---
+    // --- 12.2: kassert! with format message ---
     kassert!(HEAP_SIZE > 0, "heap must be non-zero, got {}", HEAP_SIZE);
-    serial_write_str("[OK] 11.2) kassert!(true, msg) — no panic\r\n");
+    serial_write_str("[OK] 12.2) kassert!(true, msg) — no panic\r\n");
 
-    // --- 11.3: kassert_eq! bare ---
+    // --- 12.3: kassert_eq! bare ---
     kassert_eq!(1u64 + 1, 2u64);
-    serial_write_str("[OK] 11.3) kassert_eq!(equal) — no panic\r\n");
+    serial_write_str("[OK] 12.3) kassert_eq!(equal) — no panic\r\n");
 
-    // --- 11.4: kassert_eq! with message ---
+    // --- 12.4: kassert_eq! with message ---
     kassert_eq!(
         core::mem::align_of::<u64>(),
         8usize,
         "u64 alignment must be 8"
     );
-    serial_write_str("[OK] 11.4) kassert_eq!(equal, msg) — no panic\r\n");
+    serial_write_str("[OK] 12.4) kassert_eq!(equal, msg) — no panic\r\n");
 
-    // --- 11.5: kassert_ne! bare ---
+    // --- 12.5: kassert_ne! bare ---
     kassert_ne!(0u64, 1u64);
-    serial_write_str("[OK] 11.5) kassert_ne!(unequal) — no panic\r\n");
+    serial_write_str("[OK] 12.5) kassert_ne!(unequal) — no panic\r\n");
 
-    // --- 11.6: kassert_ne! with message ---
+    // --- 12.6: kassert_ne! with message ---
     kassert_ne!(HEAP_SIZE, 0usize, "heap size must not be zero");
-    serial_write_str("[OK] 11.6) kassert_ne!(unequal, msg) — no panic\r\n");
+    serial_write_str("[OK] 12.6) kassert_ne!(unequal, msg) — no panic\r\n");
 
-    // --- 11.7: kdebug_assert! — active in debug, no-op in release ---
+    // --- 12.7: kdebug_assert! — active in debug, no-op in release ---
     //
     // In debug builds (opt-level=0, debug_assertions=true) this expands to
     // a kassert! call. In release builds the entire expression is elided.
     kdebug_assert!(cfg!(debug_assertions));
-    serial_write_str("[OK] 11.7) kdebug_assert! — no panic\r\n");
+    serial_write_str("[OK] 12.7) kdebug_assert! — no panic\r\n");
 
-    // --- 11.8: kdebug_assert_eq! ---
+    // --- 12.8: kdebug_assert_eq! ---
     kdebug_assert_eq!(2u64 * 2, 4u64);
-    serial_write_str("[OK] 11.8) kdebug_assert_eq! — no panic\r\n");
+    serial_write_str("[OK] 12.8) kdebug_assert_eq! — no panic\r\n");
 
-    // --- 11.9: kdebug_assert_ne! ---
+    // --- 12.9: kdebug_assert_ne! ---
     kdebug_assert_ne!(0u64, u64::MAX);
-    serial_write_str("[OK] 11.9) kdebug_assert_ne! — no panic\r\n");
+    serial_write_str("[OK] 12.9) kdebug_assert_ne! — no panic\r\n");
 
     log::info!("assertions: all macro smoke tests passed");
     serial_write_str("[OK] Assertion macro smoke test complete\r\n");

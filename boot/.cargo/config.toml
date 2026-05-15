@@ -4,6 +4,13 @@ target = "x86_64-unknown-uefi"
 
 [target.x86_64-unknown-uefi]
 runner = "uefi-run"
+# NOTE (Phase 1.4.2): We intentionally do NOT set force-frame-pointers=yes here.
+# Applying that flag to the entire binary (including core/alloc via build-std)
+# significantly increases stack depth in UEFI debug builds and triggers a #DE
+# exception in the frame allocator initialization.  The RBP stack walker in
+# boot/src/unwind.rs therefore operates on a best-effort basis: debug builds
+# of Ferrous code produce RBP chains naturally; deeply-optimised or inlined
+# frames may appear absent, and (end of trace) is printed instead.
 
 [unstable]
 build-std = ["core", "alloc"]

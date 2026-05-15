@@ -178,14 +178,20 @@ EXPECTED_STRINGS=(
     "[DEBUG] ferrous_boot: smoke: debug level"
     "[INFO ] ferrous_boot: heap:"
 
+    # Phase 1.4.2 — panic handler with stack traces
+    "Panic handler smoke test"
+    "panic: handler installed (stack trace support enabled)"
+    "[TRACE] Stack trace (RBP chain):"
+    "Panic handler smoke test complete"
+
     # Phase 1.4.3 — assertion and debug macros
     "Assertion macro smoke test"
-    "[OK] 11.1) kassert!(true) — no panic"
-    "[OK] 11.3) kassert_eq!(equal) — no panic"
-    "[OK] 11.5) kassert_ne!(unequal) — no panic"
-    "[OK] 11.7) kdebug_assert! — no panic"
-    "[OK] 11.8) kdebug_assert_eq! — no panic"
-    "[OK] 11.9) kdebug_assert_ne! — no panic"
+    "[OK] 12.1) kassert!(true) — no panic"
+    "[OK] 12.3) kassert_eq!(equal) — no panic"
+    "[OK] 12.5) kassert_ne!(unequal) — no panic"
+    "[OK] 12.7) kdebug_assert! — no panic"
+    "[OK] 12.8) kdebug_assert_eq! — no panic"
+    "[OK] 12.9) kdebug_assert_ne! — no panic"
     "assertions: all macro smoke tests passed"
     "Assertion macro smoke test complete"
 )
