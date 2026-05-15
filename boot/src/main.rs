@@ -22,6 +22,11 @@ mod console;
 mod logger;
 mod memory;
 
+// Kernel assertion macros from ferrous-core (Phase 1.4.3).
+use ferrous_core::{
+    kassert, kassert_eq, kassert_ne, kdebug_assert, kdebug_assert_eq, kdebug_assert_ne,
+};
+
 use core::fmt::Write;
 use linked_list_allocator::LockedHeap;
 use uefi::boot::MemoryType;
@@ -1453,6 +1458,82 @@ fn kernel_main(boot_info: &KernelBootInfo) -> ! {
     log::info!("heap: {} KiB BSS-backed, allocator live", heap_size_kb);
 
     serial_write_str("[OK] Kernel logger smoke test complete\r\n");
+
+    // -----------------------------------------------------------------------
+    // Step 11: Assertion and debug macro smoke test (Phase 1.4.3).
+    //
+    // Exercises every macro exported by `ferrous-core::macros`:
+    //
+    //   kassert!           — basic condition check
+    //   kassert_eq!        — equality with message
+    //   kassert_ne!        — inequality
+    //   kdebug_assert!     — debug-only condition check
+    //   kdebug_assert_eq!  — debug-only equality
+    //   kdebug_assert_ne!  — debug-only inequality
+    //
+    // Each call uses a condition that is *always true*, so no panic is
+    // triggered.  The boot sequence continues normally and prints a
+    // confirmation line that the CI boot verification checks for.
+    //
+    // `kunreachable!`, `kunimplemented!`, and `ktodo!` are NOT called here
+    // because they always panic — they will be exercised by future subsystem
+    // tests that use fault-injection (Phase 3+).
+    //
+    // Expected serial output:
+    //   [OK] 11.1) kassert!(true) — no panic
+    //   [OK] 11.2) kassert_eq!(equal) — no panic
+    //   [OK] 11.3) kassert_ne!(unequal) — no panic
+    //   [OK] 11.4) kdebug_assert! — debug-only, no panic
+    //   [OK] 11.5) kdebug_assert_eq! — debug-only, no panic
+    //   [OK] 11.6) kdebug_assert_ne! — debug-only, no panic
+    //   [INFO ] ferrous_boot: assertions: all macro smoke tests passed
+    serial_write_str("\r\n[...] Assertion macro smoke test\r\n");
+
+    // --- 11.1: kassert! with bare condition ---
+    kassert!(core::mem::size_of::<u64>() == 8);
+    serial_write_str("[OK] 11.1) kassert!(true) — no panic\r\n");
+
+    // --- 11.2: kassert! with format message ---
+    kassert!(HEAP_SIZE > 0, "heap must be non-zero, got {}", HEAP_SIZE);
+    serial_write_str("[OK] 11.2) kassert!(true, msg) — no panic\r\n");
+
+    // --- 11.3: kassert_eq! bare ---
+    kassert_eq!(1u64 + 1, 2u64);
+    serial_write_str("[OK] 11.3) kassert_eq!(equal) — no panic\r\n");
+
+    // --- 11.4: kassert_eq! with message ---
+    kassert_eq!(
+        core::mem::align_of::<u64>(),
+        8usize,
+        "u64 alignment must be 8"
+    );
+    serial_write_str("[OK] 11.4) kassert_eq!(equal, msg) — no panic\r\n");
+
+    // --- 11.5: kassert_ne! bare ---
+    kassert_ne!(0u64, 1u64);
+    serial_write_str("[OK] 11.5) kassert_ne!(unequal) — no panic\r\n");
+
+    // --- 11.6: kassert_ne! with message ---
+    kassert_ne!(HEAP_SIZE, 0usize, "heap size must not be zero");
+    serial_write_str("[OK] 11.6) kassert_ne!(unequal, msg) — no panic\r\n");
+
+    // --- 11.7: kdebug_assert! — active in debug, no-op in release ---
+    //
+    // In debug builds (opt-level=0, debug_assertions=true) this expands to
+    // a kassert! call. In release builds the entire expression is elided.
+    kdebug_assert!(cfg!(debug_assertions));
+    serial_write_str("[OK] 11.7) kdebug_assert! — no panic\r\n");
+
+    // --- 11.8: kdebug_assert_eq! ---
+    kdebug_assert_eq!(2u64 * 2, 4u64);
+    serial_write_str("[OK] 11.8) kdebug_assert_eq! — no panic\r\n");
+
+    // --- 11.9: kdebug_assert_ne! ---
+    kdebug_assert_ne!(0u64, u64::MAX);
+    serial_write_str("[OK] 11.9) kdebug_assert_ne! — no panic\r\n");
+
+    log::info!("assertions: all macro smoke tests passed");
+    serial_write_str("[OK] Assertion macro smoke test complete\r\n");
 
     serial_write_str(
         "\r\nKernel halting. Exception handlers active — any CPU exception will be caught.\r\n",

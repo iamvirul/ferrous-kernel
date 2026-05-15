@@ -190,6 +190,17 @@ jobs:
             "[WARN ] ferrous_boot: smoke: warn level"
             "[INFO ] ferrous_boot: smoke: info level"
             "[DEBUG] ferrous_boot: smoke: debug level"
+
+            # Phase 1.4.3 — assertion and debug macros
+            "Assertion macro smoke test"
+            "[OK] 11.1) kassert!(true) — no panic"
+            "[OK] 11.3) kassert_eq!(equal) — no panic"
+            "[OK] 11.5) kassert_ne!(unequal) — no panic"
+            "[OK] 11.7) kdebug_assert! — no panic"
+            "[OK] 11.8) kdebug_assert_eq! — no panic"
+            "[OK] 11.9) kdebug_assert_ne! — no panic"
+            "assertions: all macro smoke tests passed"
+            "Assertion macro smoke test complete"
           )
 
           FAILED=0

@@ -15,6 +15,7 @@ path = "src/main.rs"
 uefi = { version = "0.33", features = ["alloc"] }
 log = { version = "0.4", default-features = false }
 ferrous-boot-info = { path = "../lib/boot-info" }
+ferrous-core = { path = "../lib/core" }
 linked_list_allocator = "0.10"
 
 # Boot code requires unsafe for UEFI interface, so we don't inherit workspace lints

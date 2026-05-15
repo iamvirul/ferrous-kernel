@@ -1,12 +1,23 @@
-//! Ferrous Core Library
+//! `ferrous-core` — shared kernel utilities for Ferrous (Phase 1.4.3+).
 //!
-//! Core utilities for Ferrous Kernel that work in `no_std` environments.
+//! A `no_std` library consumed by both the UEFI bootloader (`ferrous-boot`)
+//! and the bare-metal kernel binary (`ferrous-kernel`).  It provides
+//! primitives that would otherwise need to be duplicated across crates.
 //!
-//! This library provides essential utilities without dependencies on the standard library.
+//! # Modules
+//!
+//! | Module | Contents |
+//! |--------|----------|
+//! | [`macros`] | Kernel assertion and debug macros (`kassert!`, `kassert_eq!`, `kdebug_assert!`, `kunreachable!`, …) |
+//!
+//! # `no_std` guarantee
+//!
+//! This crate never depends on `std`, `libc`, or any OS-specific API.  All
+//! items are safe to use in interrupt handlers, early boot code, and any
+//! context where the heap may not be available.
 
 #![no_std]
-#![no_main]
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
 
-// Core library implementation will be added in Phase 1
+pub mod macros;
