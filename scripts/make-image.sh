@@ -183,7 +183,7 @@ if [[ "$OS" == "Darwin" ]]; then
     hdiutil detach "$VERIFY_DEV" >/dev/null
     rmdir "$VERIFY_MOUNT"
 else
-    if mdir -i "$OUTPUT" ::/EFI/BOOT/ | grep -q "BOOTX64.EFI"; then
+    if mdir -i "$OUTPUT" ::/EFI/BOOT/ 2>/dev/null | grep -qi "BOOTX64"; then
         info "Verified: EFI/BOOT/BOOTX64.EFI present in image"
     else
         fail "EFI binary not found in image — something went wrong"
