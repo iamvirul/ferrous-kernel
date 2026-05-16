@@ -4,7 +4,7 @@
 [![Release](https://github.com/iamvirul/ferrous-kernel/actions/workflows/release.yml/badge.svg)](https://github.com/iamvirul/ferrous-kernel/actions/workflows/release.yml)
 [![CodeQL](https://github.com/iamvirul/ferrous-kernel/actions/workflows/codeql.yml/badge.svg)](https://github.com/iamvirul/ferrous-kernel/actions/workflows/codeql.yml)
 [![Latest Release](https://img.shields.io/github/v/release/iamvirul/ferrous-kernel?color=orange)](https://github.com/iamvirul/ferrous-kernel/releases/latest)
-[![License](https://img.shields.io/github/license/iamvirul/ferrous-kernel)](LICENSE)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![Rust](https://img.shields.io/badge/language-Rust-orange?logo=rust)](https://www.rust-lang.org)
 [![Architecture](https://img.shields.io/badge/arch-x86__64-blue)](https://github.com/iamvirul/ferrous-kernel)
 [![CodeRabbit Pull Request Reviews](https://img.shields.io/coderabbit/prs/github/iamvirul/ferrous-kernel?utm_source=oss&utm_medium=github&utm_campaign=iamvirul%2Fferrous-kernel&labelColor=171717&color=FF570A&link=https%3A%2F%2Fcoderabbit.ai&label=CodeRabbit+Reviews)](https://coderabbit.ai)
