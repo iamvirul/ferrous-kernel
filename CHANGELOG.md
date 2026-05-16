@@ -9,6 +9,39 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+#### Phase 2.1.1 - Task and Process Data Structures
+- `TaskId` and `ProcessId` newtypes over `u64`; opaque and unforgeable
+- `TaskState` enum (Ready / Running / Blocked / Exiting / Zombie) with
+  `const can_transition_to()` and atomic compare-and-swap via
+  `try_transition()`; invalid transitions return `TaskStateError`
+- `TaskPriority` enum (Idle / Low / Normal / High / RealTime)
+- `RegisterState` (`repr(C)`) holding callee-saved registers plus
+  rsp / rip / rflags; field offsets documented for the Phase 2.2.3
+  context-switch assembly stub
+- `TaskControlBlock` (`repr(C)`) with saved register state, kernel stack
+  bounds behind safe wrappers, atomic state, priority, time-slice, and
+  owner PID (`kernel/src/task/task.rs`)
+- `ProcessState` enum (Active / Exiting / Zombie) with validated
+  transitions and `ProcessStateError`
+- `Process` with fixed-capacity task list (16 slots), atomic state,
+  exit code storage, and stubs for address-space and capability-space
+  fields to be populated in Phases 2.1.2 and 2.3.1
+  (`kernel/src/task/process.rs`)
+- `kernel::task::smoke_test()` with 8 test cases covering ID
+  round-trips, state machine enforcement, atomic CAS behaviour, task
+  registration, capacity overflow rejection, and exit-code storage
+
+#### Documentation and Tooling
+- README badges: CI, Release, CodeQL, latest release version, license,
+  Rust language, and architecture
+- ROADMAP.md: current phase updated to Phase 2; task 2.1.1 marked
+  complete
+- ARCHITECTURE.md: Scheduler abstractions section updated with
+  implemented types and file locations; boot sequence annotated with
+  v0.1.0 completion status
+
 ---
 
 ## [0.1.0] - 2026-05-16
