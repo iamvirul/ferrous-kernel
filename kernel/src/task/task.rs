@@ -274,9 +274,20 @@ impl TaskControlBlock {
             "stack_top must be 8-byte aligned"
         );
 
+        // Initialize rsp to a valid 8-byte-aligned value within the stack bounds.
+        // Stack grows downward, so start at (stack_top - 8) aligned down to 8 bytes.
+        let initial_rsp = ((stack_top as usize) - 8) & !7;
+        debug_assert!(
+            initial_rsp >= stack_bottom as usize && initial_rsp < stack_top as usize,
+            "initial rsp must be within stack bounds"
+        );
+
+        let mut registers = RegisterState::default();
+        registers.rsp = initial_rsp as u64;
+
         Self {
             id,
-            registers: RegisterState::default(),
+            registers,
             stack_top,
             stack_bottom,
             state: AtomicU8::new(TaskState::Ready as u8),
