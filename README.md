@@ -42,10 +42,10 @@ This is **not** a Linux replacement. It's a long-term research project exploring
 
 ## Current Status
 
-**Phase:** Phase 2 — Core Kernel Services (Current)
-**Version:** v0.1.0 (Stable Foundation)
-**Target Architecture:** x86_64 (ARM64 planned)
-**Target Environment:** Server / Cloud / Research
+- **Phase:** Phase 2 — Core Kernel Services (Current)
+- **Version:** v0.1.0 (Stable Foundation)
+- **Target Architecture:** x86_64 (ARM64 planned)
+- **Target Environment:** Server / Cloud / Research
 
 See [ROADMAP.md](docs/ROADMAP.md) for detailed development plan.
 
