@@ -139,7 +139,8 @@ pub fn smoke_test() {
     // 14.8 — Process exit code
     proc.try_transition(ProcessState::Active, ProcessState::Exiting)
         .expect("Active -> Exiting");
-    proc.set_exit_code(0).expect("set_exit_code in Exiting state");
+    proc.set_exit_code(0)
+        .expect("set_exit_code in Exiting state");
     assert_eq!(proc.exit_code(), Some(0));
     log::info!("[OK] 14.8) Process: exit code stored on Exiting state");
 
