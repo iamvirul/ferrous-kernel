@@ -10,7 +10,7 @@
 This roadmap outlines the development path for Ferrous, a next-generation operating system kernel written in Rust. This is a research-grade, long-term project focused on security, isolation, and modern workload support.
 
 **Project Duration Estimate:** Multi-year effort
-**Current Phase:** Phase 1 — Proof of Life
+**Current Phase:** Phase 2 — Core Kernel Services
 
 ---
 
@@ -162,7 +162,7 @@ Every milestone must advance these core goals:
 
 | Task | Issue | Status | Priority |
 |------|-------|--------|----------|
-| 2.1.1 Task and Process Data Structures | #66 | Not Started | Critical |
+| 2.1.1 Task and Process Data Structures | #66 | Complete (PR #145) | Critical |
 | 2.1.2 Address Space Management | #67 | Not Started | Critical |
 | 2.1.3 ELF Binary Loader | #68 | Not Started | High |
 | 2.1.4 Kernel/User Mode Transition | #69 | Not Started | Critical |
