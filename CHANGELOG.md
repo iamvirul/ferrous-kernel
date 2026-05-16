@@ -1,66 +1,106 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.
+All notable changes to Ferrous Kernel are documented in this file.
+
+Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+---
+
+## [Unreleased]
+
+---
 
 ## [0.1.0] - 2026-05-16
 
-### Overview
-v0.1.0 is a minimal, verified bare-metal foundation: it boots, owns the hardware, manages memory, catches exceptions, logs structured output, and halts cleanly. It is now ready for Phase 2 (scheduling, IPC, user-space) to build on top.
+First tagged release. The kernel boots from UEFI firmware, initialises physical
+and virtual memory, enters the kernel proper, and produces observable structured
+output over COM1 serial before halting cleanly. Foundation milestone only; see
+Known Limitations below.
 
-#### What v0.1.0 does
-- **Boots on real UEFI hardware / QEMU**: Loads as a proper UEFI application (`BOOTX64.EFI`), reads memory maps, calls `exit_boot_services()`, switches to a private kernel stack (64 KiB with guard region), and jumps to the kernel entry point.
-- **Runs bare-metal x86-64**: Loads its own GDT and installs an IDT with 32 exception handlers. All CPU exceptions are caught and reported, preventing silent crashes.
-- **Manages physical memory**: Parses the UEFI memory map, initializes a bitmap frame allocator covering all usable RAM, and tracks 4 KiB physical frames.
-- **Manages virtual memory**: Builds page tables from scratch (PML4 $\rightarrow$ PDPT $\rightarrow$ PD). Maps 1 GiB identity for early boot and a higher-half alias for the kernel image. Loads CR3 for native paging and supports individual 4 KiB page mapping/unmapping with guard pages.
-- **Working heap**: Provides a 4 MiB BSS-backed heap via `linked_list_allocator` with full `alloc` crate support (`Vec`, `Box`, `String`, `BTreeMap`).
-- **Structured serial logging**: COM1 serial output at 115200/8N1 with five log levels (ERROR to TRACE) and runtime filtering.
-- **Panic handler with stack traces**: Includes ASCII banner, source location, and a best-effort RBP frame-pointer walk to print return addresses.
-- **Assertion and debug macros**: Provides `kassert!`, `kdebug_assert!`, and path-impossible markers like `kunreachable!` and `ktodo!` in `ferrous-core`.
-- **Serial console driver**: Full `SerialPort` implementation with configurable parameters and a `Console` trait abstraction for `fmt::Write` support.
+### Added
 
-#### What it cannot do yet
-- No keyboard input handling
-- No display / framebuffer output
-- No filesystem or networking
-- No user-space processes or SMP (single core only)
-- No interrupt-driven I/O (polling only)
-- No persistent storage
+#### Phase 1.1 - Bare Metal Boot
+- UEFI bootloader (`ferrous-boot`) targeting `x86_64-unknown-uefi`
+- Kernel entry point receives typed `BootInfo` from the bootloader
+- Private 64 KiB kernel stack with guard page established before kernel entry
+- GDT and IDT loaded; 32 CPU exception handlers installed
+- Serial output available from the first instruction after UEFI handoff
+- Boot identity message: `=== Ferrous Kernel ===` followed by `Hello from Ferrous!`
 
-### Detailed Changes
+#### Phase 1.2 - Memory Map
+- Physical memory map parsed from UEFI memory descriptors
+- Usable RAM regions identified, deduplicated, and reported at boot
+- Memory map passed to the kernel via `BootInfo`
 
-#### Core Kernel & Architecture
-- **Execution Environment**: Implemented GDT initialization and IDT configuration to establish a stable execution environment.
-- **Exception Handling**: Integrated basic exception handlers for system faults and interrupts.
-- **Kernel Stack**: Implemented a dedicated kernel stack setup to ensure isolated execution context.
-- **Boot Handoff**: Established the critical transition from the UEFI bootloader to the kernel entry point.
+#### Phase 1.3.2 - Physical Frame Allocator
+- Bitmap-based physical frame allocator covering all usable RAM
+- 4 KiB frame allocation and deallocation
+- Reports free / total frame counts at initialisation
 
-#### Memory Management
-- **Physical Memory**: 
-    - Implemented a global bitmap-based Physical Frame Allocator.
-    - Added `PhysFrame` and `BitmapFrameAllocator` types for structured memory tracking.
-    - Developed memory map parsing to understand system memory layout at boot.
-- **Virtual Memory**:
-    - Implemented 4 KiB page table management including map, unmap, and translate operations.
-    - Developed the virtual memory setup process and the CR3 register switch for paging activation.
-- **Dynamic Allocation**: implemented a kernel heap allocator for dynamic memory management.
+#### Phase 1.3.3 - Virtual Memory
+- Kernel page tables (PML4) built from scratch after `exit_boot_services`
+- CR3 loaded with new tables; higher-half kernel alias verified at boot
+- 1 GiB identity map and direct-physical map established
 
-#### I/O & Observability
-- **Serial Communication**: 
-    - Developed a 16550 UART serial driver for early boot output.
-    - Created a `Console` trait and `BootSerialPort` implementation for a standardized I/O interface.
-- **Logging Framework**: 
-    - implemented a complete kernel logging framework for structured system events.
-    - Added a `SerialLogger` that integrates with the early boot console.
-- **Diagnostics**:
-    - Enhanced the panic handler to include stack trace support for faster debugging.
-    - Added kernel-wide assertion and debug macros in `ferrous-core`.
+#### Phase 1.3.4 - Page Table Management
+- `map_4k` and `unmap_4k` for individual 4 KiB page mappings
+- Guard page support: unmapped addresses translate to `None`
+- Smoke tests verify translate, map, unmap, and guard page behaviour
 
-#### CI/CD & Tooling
-- **Verification**: Added automated boot verification scripts and QEMU testing documentation.
-- **Quality Assurance**: Integrated GitHub CodeQL for static analysis and security scanning.
-- **Dependency Management**: Configured Dependabot for automated updates of GitHub Actions and Cargo dependencies.
-- **Tooling**: Fixed KVM flag issues in QEMU run scripts to ensure wider compatibility.
+#### Phase 1.3.5 - Heap Allocator
+- Linked-list heap allocator backed by physical frames
+- `alloc` crate available in kernel code (`Vec`, `Box`, `String`, `BTreeMap`)
+- Smoke tests verify push/index/deref/starts_with on heap-allocated types
 
-#### Documentation
-- Updated `ROADMAP.md`, `ARCHITECTURE.md`, and `MEMORY_ARCHITECTURE.md` to reflect the completion of Phases 1.1 through 1.4.
-- Standardized ADR (Architecture Decision Record) processes for core design changes.
+#### Phase 1.4.1 - Logging Framework
+- `log` crate integration with `SerialLogger` backend
+- Log levels ERROR, WARN, INFO, DEBUG routed to COM1
+- Format: `[LEVEL] crate: message`
+
+#### Phase 1.4.2 - Panic Handler
+- `#[panic_handler]` emits ASCII banner, source location, and message to COM1
+- RBP-chain stack trace walker prints raw frame return addresses
+- Smoke test verifies handler survives normal execution
+
+#### Phase 1.4.3 - Assertion and Debug Macros (`ferrous-core`)
+- `kassert!`, `kassert_eq!`, `kassert_ne!` - panic with expression context on failure
+- `kdebug_assert!`, `kdebug_assert_eq!`, `kdebug_assert_ne!` - elided in release builds
+- `kunreachable!` and `ktodo!` for path-impossible markers
+- Smoke tests verify all nine macro variants
+
+#### Phase 1.4.4 - Serial Console Driver
+- `kernel/src/drivers/serial.rs`: production `SerialPort` with configurable baud
+  rate (`BaudRate`), framing (`DataBits`, `Parity`, `StopBits`), multi-port
+  support (`ComPort`), and typed `SerialError`
+- `kernel/src/drivers/console.rs`: `Console` trait (supertrait of `fmt::Write`)
+  and `SerialConsole` implementation
+- `boot/src/serial.rs`: `BootSerialPort` for the UEFI boot phase; zero-cost
+  `Copy` type; mirrors the hardware model without a kernel-crate dependency
+- Module-level free functions (`serial_init`, `serial_write_str`, etc.) preserve
+  the existing API used by the panic handler and stack-trace walker
+- Smoke tests cover `fmt::Write`, non-blocking receive (`try_read_byte`), and
+  RX FIFO status (`data_available`)
+
+#### Tooling
+- `scripts/make-image.sh`: produces a 64 MiB FAT32 bootable disk image
+  (`EFI/BOOT/BOOTX64.EFI`); supports macOS (`hdiutil` + `newfs_msdos`) and
+  Linux (`mtools`)
+- `scripts/verify-boot.sh`: headless QEMU boot verification; checks all expected
+  serial output strings within a configurable timeout; suitable for CI
+- GitHub Actions CI: build and boot-verify on every push and pull request
+- GitHub CodeQL: static analysis and security scanning
+
+### Known Limitations
+
+- Single core only; no SMP
+- No interrupt-driven I/O; all serial I/O is polled
+- No keyboard input or display / framebuffer output
+- No filesystem or persistent storage
+- No networking
+- No user-space processes or syscall interface
+
+---
+
+[Unreleased]: https://github.com/iamvirul/ferrous-kernel/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/iamvirul/ferrous-kernel/releases/tag/v0.1.0
