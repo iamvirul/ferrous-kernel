@@ -1,7 +1,7 @@
 # Ferrous Kernel - Development Roadmap
 
-**Last Updated:** 2026-05-14
-**Status:** Phase 1 — Proof of Life (In Progress)
+**Last Updated:** 2026-05-16
+**Status:** Phase 2 — Core Kernel Services (Current)
 
 ---
 
@@ -57,7 +57,7 @@ Every milestone must advance these core goals:
 
 ---
 
-## Phase 1: Proof of Life — IN PROGRESS (Q2-Q3 2026)
+## Phase 1: Proof of Life — COMPLETE (Q2-Q3 2026)
 
 **Goal:** Boot into kernel space and establish basic runtime environment.
 
@@ -128,18 +128,18 @@ Every milestone must advance these core goals:
 
 | Task | Issue | Status |
 |------|-------|--------|
-| 1.4.1 Logging Framework | #21 | Not Started |
-| 1.4.2 Panic Handler with Stack Traces | #22 | Not Started |
-| 1.4.3 Basic Assertions and Debug Macros | #23 | Not Started |
-| 1.4.4 Serial Console Driver | #24 | Not Started |
+| 1.4.1 Logging Framework | #21 | Complete |
+| 1.4.2 Panic Handler with Stack Traces | #22 | Complete |
+| 1.4.3 Basic Assertions and Debug Macros | #23 | Complete |
+| 1.4.4 Serial Console Driver | #24 | Complete |
 
 ### Success Criteria
-
 - [x] Kernel boots on QEMU x86_64
 - [x] Can print "Hello from Ferrous!" to serial console
 - [x] Page fault handler catches and reports violations
 - [x] Kernel heap allocation works (`Vec`, `Box`, `String` available)
-- [ ] Clean panic messages with source locations
+- [x] Clean panic messages with source locations and stack traces
+- [x] Structured logging and serial console driver operational
 
 ---
 

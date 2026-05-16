@@ -42,7 +42,8 @@ This is **not** a Linux replacement. It's a long-term research project exploring
 
 ## Current Status
 
-**Phase:** Phase 1 — Proof of Life (In Progress)
+**Phase:** Phase 2 — Core Kernel Services (Current)
+**Version:** v0.1.0 (Stable Foundation)
 **Target Architecture:** x86_64 (ARM64 planned)
 **Target Environment:** Server / Cloud / Research
 
@@ -165,13 +166,10 @@ See [SETUP.md](docs/SETUP.md) for complete setup and build instructions.
 ### Phase 0: Foundation & Design — Complete
 Established structure, documentation, and development environment.
 
-### Phase 1: Proof of Life (Q2-Q3 2026) — Current
-Boot via UEFI, basic memory management, serial output.
-- Task 1.1.1 (UEFI Bootloader): complete
-- Task 1.1.2 (Kernel Entry Point Handoff): complete — verified on QEMU
-- Task 1.1.3 (Basic Serial Output): complete — "Hello from Ferrous!" on serial console
+### Phase 1: Proof of Life (Q2-Q3 2026) — Complete
+Boot via UEFI, comprehensive memory management, and structured serial logging. Established the bare-metal foundation for the kernel.
 
-### Phase 2: Core Kernel (Q4 2026 - Q2 2027)
+### Phase 2: Core Kernel (Q4 2026 - Q2 2027) — Current
 Scheduler, IPC, capability system, first user-space program.
 
 ### Phase 3: Isolation (Q3-Q4 2027)

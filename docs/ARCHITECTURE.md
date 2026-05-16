@@ -1,8 +1,8 @@
 # Ferrous Kernel - System Architecture
 
-**Version:** 0.2  
-**Date:** 2026-05-02  
-**Status:** Phase 1 — Proof of Life (In Progress)
+**Version:** 0.1  
+**Date:** 2026-05-16  
+**Status:** Phase 1 — Complete (v0.1.0)
 
 ---
 
@@ -546,7 +546,7 @@ Ferrous provides a capability-based system call interface:
 - Detailed subsystem designs
 - ADR template and initial ADRs
 
-### Phase 1: Proof of Life — IN PROGRESS (Q2-Q3 2026)
+### Phase 1: Proof of Life — COMPLETE (Q2-Q3 2026)
 - Basic boot and memory management
 - No user-space yet
 - Foundation for all subsystems
@@ -554,9 +554,8 @@ Ferrous provides a capability-based system call interface:
 **Completed milestones:**
 - 1.1 Bare Metal Boot — UEFI entry, serial output, GDT, IDT, exception handlers
 - 1.2 Runtime Setup — kernel stack, GDT, IDT, basic exception handling
-- 1.3.1 Parse UEFI Memory Map — `MemoryMap` in `ferrous-boot-info`, global `init`/`get`
-- 1.3.2 Physical Frame Allocator — `BitmapFrameAllocator<262144>`, 52,311 free frames on QEMU
-- 1.3.3 Virtual Memory Setup — `VirtualAddress`, `PhysicalAddress`, `PageTable`, `KernelPageTable`; CR3 loaded, higher-half alias at `0xFFFF_8000_0000_0000` confirmed live
+- 1.3 Memory Management Foundation — Memory map parsing, physical frame allocator, virtual memory setup, page table management, and kernel heap allocator
+- 1.4 Core Infrastructure — Structured logging, enhanced panic handler with stack traces, assertion/debug macros, and serial console driver
 
 ### Phase 2: Core Kernel
 - Scheduler, IPC, capabilities
@@ -629,9 +628,10 @@ This architecture prioritizes **correctness and safety** over features, enabling
 ---
 
 **Next Steps**: 
-1. Complete Phase 1.3 memory management (1.3.4 page management, 1.3.5 heap allocator)
-2. Complete Phase 1.4 core infrastructure (logging, panic handler, debug macros)
-3. Iterate on architecture based on implementation experience
+1. Implement Phase 2 core services (scheduler, IPC, capabilities)
+2. Transition from a single boot task to a multi-tasking environment
+3. Develop the first user-space process and syscall interface
+4. Iterate on architecture based on implementation experience
 
 ---
 

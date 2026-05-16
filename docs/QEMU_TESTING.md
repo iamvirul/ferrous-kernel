@@ -102,9 +102,9 @@ Adjust the OVMF path for your system:
 
 ---
 
-## Expected Output — Phase 1 Current (through 1.3.3)
+## Expected Output — v0.1.0 (Complete Phase 1)
 
-A successful boot through Phase 1.3.3 produces the following on the serial console. This output is the authoritative reference for the `verify-boot.sh` script.
+A successful boot in v0.1.0 produces the following on the serial console. This output is the authoritative reference for the `verify-boot.sh` script.
 
 ```
 ========================================
@@ -112,7 +112,7 @@ A successful boot through Phase 1.3.3 produces the following on the serial conso
 ========================================
 
 [OK] UEFI boot services initialized
-[INFO] Firmware: EDK II (rev 65536)
+[INFO] Firmware: EDK II (rev 6553 la)
 [INFO] UEFI Revision: 2.70
 [...] Retrieving memory map
     Found 99 memory regions
@@ -164,6 +164,13 @@ Hello from Ferrous!
 [INFO] Identity map: [0x0000000000000000, 0x0000000040000000)  1 GiB  2 MiB pages
 [INFO] Higher-half:  [0xffff800000000000, 0xffff800040000000) → same physical
 [OK] Higher-half alias verified (PML4[0] = 0x<value> via both windows)
+
+[INFO] Heap initialized (4 MiB BSS)
+[TEST] Heap smoke test: Vec, Box, String... OK
+
+[INFO] Logging framework active (Level: INFO)
+[DEBUG] Initializing Serial Console Driver...
+[OK] Serial Console: COM1 (115200 8N1) active
 
 Kernel halting. Exception handlers active — any CPU exception will be caught.
 ```
@@ -381,18 +388,17 @@ Physical hardware testing has not been performed as of Phase 1.1. If you test on
 
 ---
 
-## Known Limitations (Phase 1, through 1.3.3)
+## Known Limitations (v0.1.0)
 
 | Limitation | Detail | Tracked |
 |------------|--------|---------|
-| No kernel heap | No `Box`/`Vec` — heap allocator not yet implemented. | Issue #20 (1.3.5) |
-| Identity map only | Kernel runs at identity-mapped VAs; full higher-half relocation pending. | Phase 2 |
-| 2 MiB page granularity | Page tables use huge pages; individual 4 KiB map/unmap not yet implemented. | Issue #19 (1.3.4) |
-| No logging framework | Serial output via raw `serial_write_str` helpers; structured logging pending. | Issue #21 (1.4.1) |
-| No panic source locations | Panic handler is a bare `hlt` loop; stack traces pending. | Issue #22 (1.4.2) |
-| Hardware interrupts disabled | `cli` executed before handoff; only CPU exceptions are caught. | Phase 2 (scheduler) |
-| Single core | Only the boot processor is active. | Phase 2+ |
-| Stack guard is soft | Guard region is zeroed BSS, not a non-present page. | Enforced once page management (1.3.4) is done |
+| No keyboard input | Only output is implemented; no input handling. | Phase 2 |
+| No display output | No framebuffer driver; all output is via serial. | Phase 4 |
+| No filesystem | No persistent storage or file system drivers. | Phase 2+ |
+| No networking | No network stack or device drivers. | Phase 2+ |
+| No user-space | Everything runs in kernel mode. | Phase 2 |
+| No SMP | Only a single CPU core is active. | Phase 2+ |
+| No interrupt-driven I/O | All I/O is polling-based. | Phase 2 (IRQ/PIT) |
 
 ---
 
