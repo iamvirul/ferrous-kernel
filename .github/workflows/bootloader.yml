@@ -207,6 +207,16 @@ jobs:
             "[OK] 12.9) kdebug_assert_ne! — no panic"
             "assertions: all macro smoke tests passed"
             "Assertion macro smoke test complete"
+
+            # Phase 1.4.4 — serial console driver
+            "Serial console driver smoke test (Phase 1.4.4)"
+            "[OK] 13.1) BootSerialPort fmt::Write: value=42"
+            "[OK] 13.2) try_read_byte(): None (no input)"
+            "[OK] 13.3) data_available(): false (RX FIFO empty)"
+            "serial_console: driver initialized (COM1, 115200/8N1)"
+            "serial_console: fmt::Write verified"
+            "serial_console: rx interface verified"
+            "Serial console driver smoke test complete"
           )
 
           FAILED=0
