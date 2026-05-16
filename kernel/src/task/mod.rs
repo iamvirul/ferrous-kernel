@@ -78,8 +78,10 @@ pub fn smoke_test() {
     // 14.5 — TaskControlBlock construction and state CAS
     // SAFETY: stack bounds are fabricated for the smoke test only; no context
     // switch is performed and the pointers are never dereferenced.
-    let mut stack = [0u8; 256];
-    let stack_bottom = stack.as_mut_ptr();
+    #[repr(align(8))]
+    struct AlignedStack([u8; 256]);
+    let mut stack = AlignedStack([0u8; 256]);
+    let stack_bottom = stack.0.as_mut_ptr();
     let stack_top = unsafe { stack_bottom.add(256) };
 
     let tcb = unsafe {
@@ -137,7 +139,7 @@ pub fn smoke_test() {
     // 14.8 — Process exit code
     proc.try_transition(ProcessState::Active, ProcessState::Exiting)
         .expect("Active -> Exiting");
-    proc.set_exit_code(0);
+    proc.set_exit_code(0).expect("set_exit_code in Exiting state");
     assert_eq!(proc.exit_code(), Some(0));
     log::info!("[OK] 14.8) Process: exit code stored on Exiting state");
 

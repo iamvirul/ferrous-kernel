@@ -41,6 +41,7 @@ warnings = "warn"
 opt-level = 0
 debug = true
 strip = false
+panic = "abort"
 
 [profile.release]
 opt-level = 3

@@ -1,6 +1,6 @@
 //! Process structure and related types (Phase 2.1.1).
 
-use core::sync::atomic::{AtomicI32, AtomicU8, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicUsize, Ordering};
 
 use super::TaskId;
 
@@ -10,9 +10,6 @@ use super::TaskId;
 /// practical kernel workloads in Phase 2. A slab allocator (Phase 2.2) will
 /// relax this constraint.
 pub const MAX_TASKS_PER_PROCESS: usize = 16;
-
-/// Sentinel exit code meaning "process has not exited yet".
-const NO_EXIT_CODE: i32 = i32::MIN;
 
 // ---------------------------------------------------------------------------
 // ProcessId
@@ -154,9 +151,11 @@ pub struct Process {
     /// Number of valid entries in `task_ids`.
     task_count: AtomicUsize,
 
-    /// Exit code: [`NO_EXIT_CODE`] until [`set_exit_code`](Self::set_exit_code)
-    /// is called.
+    /// Exit code value.
     exit_code: AtomicI32,
+
+    /// Whether [`set_exit_code`](Self::set_exit_code) has been called.
+    exit_code_set: AtomicBool,
     // -----------------------------------------------------------------------
     // Stubs — populated in later phases
     // -----------------------------------------------------------------------
@@ -173,7 +172,8 @@ impl Process {
             state: AtomicU8::new(ProcessState::Active as u8),
             task_ids: [TaskId::new(0); MAX_TASKS_PER_PROCESS],
             task_count: AtomicUsize::new(0),
-            exit_code: AtomicI32::new(NO_EXIT_CODE),
+            exit_code: AtomicI32::new(0),
+            exit_code_set: AtomicBool::new(false),
         }
     }
 
@@ -254,19 +254,25 @@ impl Process {
 
     /// Store the process exit code.
     ///
-    /// Should only be called when the process is in the `Exiting` state.
-    pub fn set_exit_code(&self, code: i32) {
+    /// Only accepts writes when the process is in the `Exiting` or `Zombie` state.
+    /// Returns `Ok(())` on success, or `Err(())` if the process is in the `Active` state.
+    pub fn set_exit_code(&self, code: i32) -> Result<(), ()> {
+        let state = self.state();
+        if state == ProcessState::Active {
+            return Err(());
+        }
         self.exit_code.store(code, Ordering::Release);
+        self.exit_code_set.store(true, Ordering::Release);
+        Ok(())
     }
 
     /// Return the exit code if [`set_exit_code`](Self::set_exit_code) has been
     /// called, or `None` if the process has not exited yet.
     pub fn exit_code(&self) -> Option<i32> {
-        let code = self.exit_code.load(Ordering::Acquire);
-        if code == NO_EXIT_CODE {
-            None
+        if self.exit_code_set.load(Ordering::Acquire) {
+            Some(self.exit_code.load(Ordering::Acquire))
         } else {
-            Some(code)
+            None
         }
     }
 }
