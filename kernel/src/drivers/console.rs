@@ -70,7 +70,7 @@ pub trait Console: fmt::Write {
     /// underlying device accepts byte bursts.
     fn write_str_console(&mut self, s: &str) {
         for c in s.chars() {
-            self.write_char(c);
+            Console::write_char(self, c);
         }
     }
 

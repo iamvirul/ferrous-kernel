@@ -1,8 +1,8 @@
 # Ferrous Kernel - System Architecture
 
-**Version:** 0.1  
+**Version:** 0.2  
 **Date:** 2026-05-16  
-**Status:** Phase 1 — Complete (v0.1.0)
+**Status:** Phase 2 — Core Kernel Services (in progress)
 
 ---
 
@@ -85,10 +85,16 @@ The privileged kernel core consists of six major subsystems:
 - Real-time scheduling classes (future)
 
 **Core Abstractions**:
-- `Task` - Runnable execution context (process/thread)
-- `Scheduler` - Scheduling policy implementation
-- `RunQueue` - Per-CPU run queues
-- `ResourceGroup` - CPU time accounting and limits
+- `TaskId` / `ProcessId` — opaque newtypes; unforgeable numeric identifiers
+- `TaskControlBlock` (`repr(C)`) — saved register state, kernel stack bounds, atomic `TaskState`, priority, time-slice, owner PID (`kernel/src/task/task.rs`)
+- `RegisterState` (`repr(C)`) — callee-saved registers + rsp/rip/rflags; field layout fixed for context-switch assembly (Phase 2.2.3)
+- `TaskState` — Ready / Running / Blocked / Exiting / Zombie; transitions validated by atomic CAS
+- `Process` — fixed-capacity task list, atomic `ProcessState`, exit code; address-space and capability-space fields added in Phases 2.1.2 and 2.3.1 (`kernel/src/task/process.rs`)
+- `Scheduler` — scheduling policy implementation (Phase 2.2)
+- `RunQueue` — per-CPU run queues (Phase 2.2)
+- `ResourceGroup` — CPU time accounting and limits (Phase 2+)
+
+**Implementation status**: `TaskControlBlock` and `Process` defined (Phase 2.1.1 / PR #145). Scheduler and run queue pending Phase 2.2.
 
 **Scheduling Decisions**:
 - All scheduling decisions generate observability events
@@ -218,15 +224,16 @@ The privileged kernel core consists of six major subsystems:
 - Boot failures are explicit and traceable
 
 **Boot Sequence** (high-level):
-1. UEFI handoff to kernel entry point
-2. Early CPU initialization (GDT, IDT, exception handlers)
-3. Memory map parsing and physical memory setup
-4. Virtual memory initialization (page tables)
-5. Kernel heap allocation setup
-6. Interrupt subsystem initialization
-7. Core subsystems initialization (scheduler, IPC, capabilities)
-8. Create initial kernel task
-9. Load and execute init process (first user-space)
+1. UEFI handoff to kernel entry point — **complete (v0.1.0)**
+2. Early CPU initialization (GDT, IDT, exception handlers) — **complete (v0.1.0)**
+3. Memory map parsing and physical memory setup — **complete (v0.1.0)**
+4. Virtual memory initialization (page tables) — **complete (v0.1.0)**
+5. Kernel heap allocation setup — **complete (v0.1.0)**
+6. Serial console driver and structured logging — **complete (v0.1.0)**
+7. Interrupt subsystem initialization — Phase 2.2.4
+8. Core subsystems initialization (scheduler, IPC, capabilities) — Phase 2.2 / 2.3 / 2.4
+9. Create initial kernel task — Phase 2.1
+10. Load and execute init process (first user-space) — Phase 2.1.3
 
 **Core Abstractions**:
 - `BootInfo` - Boot-time information (memory map, firmware tables)
