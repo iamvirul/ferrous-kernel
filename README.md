@@ -1,4 +1,5 @@
 # Ferrous Kernel
+![CodeRabbit Pull Request Reviews](https://img.shields.io/coderabbit/prs/github/iamvirul/ferrous-kernel?utm_source=oss&utm_medium=github&utm_campaign=iamvirul%2Fferrous-kernel&labelColor=171717&color=FF570A&link=https%3A%2F%2Fcoderabbit.ai&label=CodeRabbit+Reviews)
 
 **A next-generation operating system kernel written in Rust**
 
