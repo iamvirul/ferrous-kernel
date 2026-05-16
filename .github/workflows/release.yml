@@ -1,0 +1,43 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Image Tools
+        run: sudo apt-get update && sudo apt-get install -y mtools dosfstools
+
+      - name: Build Bootable Image
+        run: ./scripts/make-image.sh --release
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          VERSION_SQUARE=[${VERSION#v}]
+          CHANGELOG_CONTENT=$(sed -n "/## $VERSION_SQUARE/,/###/p" CHANGELOG.md | sed '$d')
+
+          if [ -z "$CHANGELOG_CONTENT" ]; then
+            CHANGELOG_CONTENT="Release $VERSION"
+          fi
+
+          gh release create "$VERSION" \
+            --title "$VERSION" \
+            --notes "$CHANGELOG_CONTENT" \
+            ferrous-boot.img
