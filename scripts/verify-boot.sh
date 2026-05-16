@@ -82,26 +82,41 @@ check_requirements() {
     fi
 
     OVMF_PATHS=(
-        "/usr/share/OVMF/OVMF_CODE.fd"
-        "/usr/share/edk2-ovmf/x64/OVMF_CODE.fd"
-        "/usr/share/edk2/x64/OVMF_CODE.fd"
+        # honour caller-supplied override (e.g. from CI env)
+        "${OVMF_CODE:-}"
+        # macOS (Homebrew)
         "/opt/homebrew/share/qemu/edk2-x86_64-code.fd"
         "/usr/local/share/qemu/edk2-x86_64-code.fd"
+        # Ubuntu / Debian
+        "/usr/share/OVMF/OVMF_CODE.fd"
+        "/usr/share/OVMF/OVMF_CODE_4M.fd"
+        "/usr/share/ovmf/OVMF.fd"
+        # Fedora / RHEL
+        "/usr/share/edk2/ovmf/OVMF_CODE.fd"
+        "/usr/share/edk2-ovmf/x64/OVMF_CODE.fd"
+        "/usr/share/edk2/x64/OVMF_CODE.fd"
     )
 
     OVMF_CODE=""
     for path in "${OVMF_PATHS[@]}"; do
-        if [[ -f "$path" ]]; then
+        if [[ -n "$path" && -f "$path" ]]; then
             OVMF_CODE="$path"
             break
         fi
     done
+
+    # Last resort: let find locate any OVMF_CODE*.fd under /usr/share
+    if [[ -z "$OVMF_CODE" ]]; then
+        OVMF_CODE=$(find /usr/share -name 'OVMF_CODE*.fd' 2>/dev/null | head -1)
+    fi
 
     if [[ -z "$OVMF_CODE" ]]; then
         fail "OVMF UEFI firmware not found."
         fail "macOS: brew install qemu | Ubuntu: apt install ovmf | Fedora: dnf install edk2-ovmf"
         exit 1
     fi
+
+    info "OVMF firmware: $OVMF_CODE"
 }
 
 # ---------------------------------------------------------------------------
