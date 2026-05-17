@@ -1739,10 +1739,13 @@ fn kernel_main(boot_info: &KernelBootInfo) -> ! {
     // from the kernel library.  Requires the kernel frame allocator to be
     // live; we initialise it here using the same memory map as Step 6.
     //
-    // NOTE: the kernel's frame allocator is a separate static from the boot
-    // crate's FRAME_ALLOC.  Both are initialised from the same memory map but
-    // track state independently.  The smoke test frees every frame it
-    // allocates (via AddressSpace::destroy) so there is no net leak.
+    // The kernel's frame allocator is a separate static from the boot crate's
+    // FRAME_ALLOC.  Both are seeded from the same raw memory map, so the
+    // kernel allocator initially believes every conventional frame is free —
+    // including the PT frames boot's FRAME_ALLOC already allocated for the
+    // bootstrap page tables.  reserve_bootstrap_page_table_frames() (called
+    // below) corrects this by marking every live intermediate PT/PD/PDPT/PML4
+    // frame as reserved before the smoke test runs.
     //
     // Expected serial output (via log framework, level INFO):
     //   "Address space smoke test (Phase 2.1.2)"
@@ -1763,8 +1766,20 @@ fn kernel_main(boot_info: &KernelBootInfo) -> ! {
             // SAFETY: kernel's frame allocator is uninitialised at this point;
             // single-threaded, interrupts disabled.
             unsafe { ferrous_kernel::memory::frame_allocator::init(&kmap) };
-            // SAFETY: frame allocator just initialised; CR3 points to the
-            // kernel PML4 set up in Step 7; VA==PA identity mapping holds.
+
+            // The kernel allocator was seeded from the raw memory map, which
+            // marks all EFI conventional pages as free — including the page-
+            // table frames that boot's FRAME_ALLOC pulled from conventional
+            // memory (PML4, PDPT, PD, PT created in Steps 7–8).  Walk the live
+            // CR3 hierarchy and protect every intermediate frame so the smoke
+            // test cannot allocate a frame that is currently part of the
+            // active page tables.
+            // SAFETY: VA==PA holds; CR3 points to the kernel PML4; single-
+            // threaded with interrupts disabled.
+            unsafe { reserve_bootstrap_page_table_frames() };
+
+            // SAFETY: frame allocator initialised and bootstrap PT frames
+            // reserved; CR3 is valid; VA==PA holds; single-threaded.
             unsafe { ferrous_kernel::memory::address_space::smoke_test() };
             serial_write_str("[OK] Address space smoke test complete\r\n");
         }
@@ -1784,6 +1799,97 @@ fn kernel_main(boot_info: &KernelBootInfo) -> ! {
 // serial_write_usize_hex) are now provided by boot/src/serial.rs and
 // re-exported at the crate root by `pub use serial::{...}` above.
 // See boot/src/serial.rs for the BootSerialPort implementation (Phase 1.4.4).
+
+// ---------------------------------------------------------------------------
+// Page-table frame reservation helper
+// ---------------------------------------------------------------------------
+
+/// Walk the active CR3 page-table hierarchy and mark every intermediate frame
+/// (PML4, PDPT, PD, PT) as reserved in the **kernel** frame allocator.
+///
+/// The kernel allocator is seeded from the raw UEFI memory map, which labels
+/// all EFI-conventional frames as free — including frames that boot's own
+/// `FRAME_ALLOC` already allocated for the bootstrap page tables.  This
+/// function re-marks those frames so the kernel allocator cannot hand them out
+/// while the bootstrap CR3 is still active.
+///
+/// Only *intermediate* page-table frames are reserved here.  Leaf frames
+/// (data pages, code pages, stack, heap) that boot mapped via 4 KiB or 2 MiB
+/// entries are not modified: `ensure_table` in the address-space module never
+/// touches leaf frames, so they are safe from the specific corruption path
+/// described in the CodeRabbit review.
+///
+/// # Safety
+///
+/// - `ferrous_kernel::memory::frame_allocator::init()` must already have been
+///   called.
+/// - VA == PA identity mapping must hold (boot invariant throughout Phase 1).
+/// - Must be called single-threaded with interrupts disabled.
+unsafe fn reserve_bootstrap_page_table_frames() {
+    // Flags from the x86-64 page-table entry format.
+    const PRESENT: u64 = 1 << 0;
+    const HUGE: u64 = 1 << 7;
+    // Bits 12–51 hold the physical address of the next-level table.
+    const PHYS_MASK: u64 = 0x000F_FFFF_FFFF_F000;
+    const PAGE_SIZE: u64 = 4096;
+    const TABLE_ENTRIES: usize = 512;
+
+    let cr3: u64;
+    core::arch::asm!(
+        "mov {cr3}, cr3",
+        cr3 = out(reg) cr3,
+        options(nomem, nostack, preserves_flags),
+    );
+    let pml4_phys = cr3 & !0xFFF;
+
+    // Reserve the PML4 frame itself.
+    ferrous_kernel::memory::frame_allocator::mark_reserved(pml4_phys, PAGE_SIZE);
+
+    // Walk PML4 → PDPT → PD → PT.
+    let pml4 = pml4_phys as *const u64;
+    for i in 0..TABLE_ENTRIES {
+        let pml4e = *pml4.add(i);
+        if pml4e & PRESENT == 0 {
+            continue;
+        }
+        // 1 GiB huge pages have no PDPT frame — skip.
+        if pml4e & HUGE != 0 {
+            continue;
+        }
+
+        let pdpt_phys = pml4e & PHYS_MASK;
+        ferrous_kernel::memory::frame_allocator::mark_reserved(pdpt_phys, PAGE_SIZE);
+
+        let pdpt = pdpt_phys as *const u64;
+        for j in 0..TABLE_ENTRIES {
+            let pdpte = *pdpt.add(j);
+            if pdpte & PRESENT == 0 {
+                continue;
+            }
+            if pdpte & HUGE != 0 {
+                continue; // 1 GiB
+            }
+
+            let pd_phys = pdpte & PHYS_MASK;
+            ferrous_kernel::memory::frame_allocator::mark_reserved(pd_phys, PAGE_SIZE);
+
+            let pd = pd_phys as *const u64;
+            for k in 0..TABLE_ENTRIES {
+                let pde = *pd.add(k);
+                if pde & PRESENT == 0 {
+                    continue;
+                }
+                if pde & HUGE != 0 {
+                    continue; // 2 MiB
+                }
+
+                // Non-huge PD entry → a PT frame.
+                let pt_phys = pde & PHYS_MASK;
+                ferrous_kernel::memory::frame_allocator::mark_reserved(pt_phys, PAGE_SIZE);
+            }
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // GDT (Global Descriptor Table)
