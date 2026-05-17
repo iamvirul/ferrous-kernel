@@ -1767,6 +1767,23 @@ fn kernel_main(boot_info: &KernelBootInfo) -> ! {
             // single-threaded, interrupts disabled.
             unsafe { ferrous_kernel::memory::frame_allocator::init(&kmap) };
 
+            // Fence the allocator to the bootstrap identity-mapped window
+            // [0, 1 GiB).  The CR3 loaded in Step 7 identity-maps only
+            // [0, 0x4000_0000); `address_space::smoke_test` dereferences
+            // page-table frame addresses directly (VA == PA).  Any frame at
+            // or above 1 GiB is outside the mapped window and would cause a
+            // page fault when written.  Mark everything from 1 GiB upward as
+            // reserved so the allocator never hands out such a frame.
+            const IDENTITY_MAP_END: u64 = 0x4000_0000; // 1 GiB
+                                                       // SAFETY: frame allocator is initialised (line above); single-
+                                                       // threaded with interrupts disabled.
+            unsafe {
+                ferrous_kernel::memory::frame_allocator::mark_reserved(
+                    IDENTITY_MAP_END,
+                    u64::MAX - IDENTITY_MAP_END,
+                );
+            }
+
             // The kernel allocator was seeded from the raw memory map, which
             // marks all EFI conventional pages as free — including the page-
             // table frames that boot's FRAME_ALLOC pulled from conventional
