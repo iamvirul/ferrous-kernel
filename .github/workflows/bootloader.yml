@@ -5,11 +5,15 @@ on:
     branches: [ main, 'phase-*', 'feature/*' ]
     paths:
       - 'boot/**'
+      - 'kernel/**'
+      - 'lib/**'
       - '.github/workflows/bootloader.yml'
   pull_request:
     branches: [ main ]
     paths:
       - 'boot/**'
+      - 'kernel/**'
+      - 'lib/**'
       - '.github/workflows/bootloader.yml'
 
 permissions:

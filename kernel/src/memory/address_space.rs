@@ -195,6 +195,31 @@ impl FrameAllocate for GlobalFrameAlloc {
 }
 
 // ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+/// Free all frames returned by [`unmap_4k_from`].
+///
+/// Handles both the leaf page frame and any intermediate page-table frames
+/// that became empty.
+///
+/// # Safety
+///
+/// Every physical address in `r` must be a valid, exclusively-owned frame.
+unsafe fn free_unmap_result(r: UnmapResult) {
+    if let Some(pa) = r.page {
+        if let Some(f) = PhysFrame::from_addr(pa) {
+            frame_allocator::deallocate(f);
+        }
+    }
+    for pa in r.tables.into_iter().flatten() {
+        if let Some(f) = PhysFrame::from_addr(pa) {
+            frame_allocator::deallocate(f);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Internal page-table helpers (walk into an arbitrary PML4)
 // ---------------------------------------------------------------------------
 
@@ -269,43 +294,92 @@ unsafe fn map_4k_into<A: FrameAllocate>(
     Ok(())
 }
 
+/// Physical addresses reclaimed by a single [`unmap_4k_from`] call.
+struct UnmapResult {
+    /// The leaf page frame, if any was present.
+    page: Option<u64>,
+    /// Intermediate page-table frames that became empty and were detached.
+    /// Ordered PT → PD → PDPT; `None` slots are unused.
+    tables: [Option<u64>; 3],
+}
+
+impl UnmapResult {
+    const fn none() -> Self {
+        Self {
+            page: None,
+            tables: [None; 3],
+        }
+    }
+}
+
 /// Unmap a single 4 KiB page from the page tables rooted at `pml4_phys`.
 ///
-/// Returns the physical address of the unmapped frame, or `None` if the
-/// address was not mapped at 4 KiB granularity.
+/// Returns the physical address of the unmapped leaf frame and the physical
+/// addresses of any intermediate page-table frames (PT, PD, PDPT) that became
+/// entirely empty after the unmap and were detached from their parent.
+/// Callers must free all returned frames.
+///
+/// Returns [`UnmapResult::none`] if the address was not mapped at 4 KiB
+/// granularity.
 ///
 /// # Safety
 ///
 /// Identity mapping (VA == PA) must hold.
-unsafe fn unmap_4k_from(pml4_phys: u64, virt: VirtualAddress) -> Option<u64> {
-    let pml4 = &mut *(pml4_phys as *mut PageTable);
+unsafe fn unmap_4k_from(pml4_phys: u64, virt: VirtualAddress) -> UnmapResult {
+    let mut r = UnmapResult::none();
 
-    let pml4e = pml4.entry_mut(virt.pml4_index());
-    if !pml4e.is_present() {
-        return None;
+    // Collect physical addresses of each table level so we can check them for
+    // emptiness after the PTE is cleared, without holding &mut references
+    // across table boundaries (which would alias).
+    let pml4 = pml4_phys as *mut PageTable;
+
+    let pml4e = (*pml4).entry_mut(virt.pml4_index()) as *mut PageTableEntry;
+    if !(*pml4e).is_present() {
+        return r;
+    }
+    let pdpt_phys = (*pml4e).phys_addr();
+
+    let pdpt = pdpt_phys as *mut PageTable;
+    let pdpte = (*pdpt).entry_mut(virt.pdpt_index()) as *mut PageTableEntry;
+    if !(*pdpte).is_present() || (*pdpte).is_huge() {
+        return r;
+    }
+    let pd_phys = (*pdpte).phys_addr();
+
+    let pd = pd_phys as *mut PageTable;
+    let pde = (*pd).entry_mut(virt.pd_index()) as *mut PageTableEntry;
+    if !(*pde).is_present() || (*pde).is_huge() {
+        return r;
+    }
+    let pt_phys = (*pde).phys_addr();
+
+    let pt = pt_phys as *mut PageTable;
+    let pte = (*pt).entry_mut(virt.pt_index()) as *mut PageTableEntry;
+    if !(*pte).is_present() {
+        return r;
     }
 
-    let pdpt = &mut *(pml4e.phys_addr() as *mut PageTable);
-    let pdpte = pdpt.entry_mut(virt.pdpt_index());
-    if !pdpte.is_present() || pdpte.is_huge() {
-        return None;
-    }
-
-    let pd = &mut *(pdpte.phys_addr() as *mut PageTable);
-    let pde = pd.entry_mut(virt.pd_index());
-    if !pde.is_present() || pde.is_huge() {
-        return None;
-    }
-
-    let pt = &mut *(pde.phys_addr() as *mut PageTable);
-    let pte = pt.entry_mut(virt.pt_index());
-    if !pte.is_present() {
-        return None;
-    }
-
-    let phys = pte.phys_addr();
+    r.page = Some((*pte).phys_addr());
     *pte = PageTableEntry::EMPTY;
-    Some(phys)
+
+    // Prune empty intermediate tables bottom-up.  Using raw-pointer reads after
+    // each EMPTY store avoids aliasing with live &mut references.
+    if (*pt).iter().all(|e| !e.is_present()) {
+        *pde = PageTableEntry::EMPTY;
+        r.tables[0] = Some(pt_phys);
+
+        if (*pd).iter().all(|e| !e.is_present()) {
+            *pdpte = PageTableEntry::EMPTY;
+            r.tables[1] = Some(pd_phys);
+
+            if (*pdpt).iter().all(|e| !e.is_present()) {
+                *pml4e = PageTableEntry::EMPTY;
+                r.tables[2] = Some(pdpt_phys);
+            }
+        }
+    }
+
+    r
 }
 
 /// Translate a virtual address in the page tables rooted at `pml4_phys`.
@@ -397,9 +471,10 @@ impl AddressSpace {
         pml4.zero();
 
         // Copy kernel higher-half entries from the current (bootstrap) PML4.
+        // Mask out CR3 control bits (PCID / PWT / PCD live in bits 0–11).
         let cr3: u64;
         core::arch::asm!("mov {cr3}, cr3", cr3 = out(reg) cr3, options(nomem, nostack));
-        let boot_pml4 = &*(cr3 as *const PageTable);
+        let boot_pml4 = &*((cr3 & !0xFFF) as *const PageTable);
         for i in KERNEL_PML4_START..512 {
             *pml4.entry_mut(i) = *boot_pml4.entry(i);
         }
@@ -467,7 +542,10 @@ impl AddressSpace {
     pub unsafe fn map_region(&mut self, region: VirtualRegion) -> Result<(), RegionMapError> {
         // Validate user-space constraint.
         let base = region.base.as_u64();
-        if base >= USER_SPACE_END || base + region.size as u64 > USER_SPACE_END {
+        let end_ok = base
+            .checked_add(region.size as u64)
+            .map_or(false, |end| end <= USER_SPACE_END);
+        if base >= USER_SPACE_END || !end_ok {
             return Err(RegionMapError::NotUserSpace);
         }
 
@@ -509,11 +587,7 @@ impl AddressSpace {
                     for j in 0..i {
                         let rollback_va = base + (j * PAGE_SIZE) as u64;
                         let rollback_virt = VirtualAddress::try_new(rollback_va).unwrap();
-                        if let Some(phys) = unmap_4k_from(pml4_phys, rollback_virt) {
-                            if let Some(f) = PhysFrame::from_addr(phys) {
-                                frame_allocator::deallocate(f);
-                            }
-                        }
+                        free_unmap_result(unmap_4k_from(pml4_phys, rollback_virt));
                     }
                     return Err(RegionMapError::PageTableAlloc(MapError::OutOfMemory));
                 }
@@ -531,11 +605,7 @@ impl AddressSpace {
                 for j in 0..i {
                     let rollback_va = base + (j * PAGE_SIZE) as u64;
                     let rollback_virt = VirtualAddress::try_new(rollback_va).unwrap();
-                    if let Some(phys) = unmap_4k_from(pml4_phys, rollback_virt) {
-                        if let Some(f) = PhysFrame::from_addr(phys) {
-                            frame_allocator::deallocate(f);
-                        }
-                    }
+                    free_unmap_result(unmap_4k_from(pml4_phys, rollback_virt));
                 }
                 return Err(RegionMapError::PageTableAlloc(e));
             }
@@ -573,11 +643,7 @@ impl AddressSpace {
         for i in 0..pages {
             let virt_addr = region_base + (i * PAGE_SIZE) as u64;
             let virt = VirtualAddress::try_new(virt_addr).unwrap();
-            if let Some(phys) = unmap_4k_from(pml4_phys, virt) {
-                if let Some(f) = PhysFrame::from_addr(phys) {
-                    frame_allocator::deallocate(f);
-                }
-            }
+            free_unmap_result(unmap_4k_from(pml4_phys, virt));
         }
 
         // Compact the region list: replace the removed slot with the last entry.
@@ -631,11 +697,7 @@ impl AddressSpace {
             let base = region.base.as_u64();
             for i in 0..pages {
                 let virt = VirtualAddress::try_new(base + (i * PAGE_SIZE) as u64).unwrap();
-                if let Some(phys) = unmap_4k_from(pml4_phys, virt) {
-                    if let Some(f) = PhysFrame::from_addr(phys) {
-                        frame_allocator::deallocate(f);
-                    }
-                }
+                free_unmap_result(unmap_4k_from(pml4_phys, virt));
             }
             self.region_count -= 1;
         }

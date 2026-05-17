@@ -40,6 +40,7 @@ use drivers::serial::SerialPort;
 /// UART having been configured by the bootloader before kernel handoff. If a
 /// panic fires before that point the output may be garbled, but that is far
 /// better than silently looping forever.
+#[cfg(not(test))]
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
     let serial = SerialPort::new();
