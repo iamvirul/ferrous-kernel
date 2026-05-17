@@ -33,9 +33,11 @@
 //!
 //! | Module              | Contents                                                  |
 //! |---------------------|-----------------------------------------------------------|
+//! | [`address_space`]   | Per-process virtual address space management              |
 //! | [`frame_allocator`] | Global physical frame allocator (bitmap-based)            |
 //! | [`paging`]          | Virtual memory — address types, page tables, mapper       |
 
+pub mod address_space;
 pub mod frame_allocator;
 pub mod heap;
 pub mod paging;
