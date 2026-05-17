@@ -1711,6 +1711,68 @@ fn kernel_main(boot_info: &KernelBootInfo) -> ! {
     log::info!("serial_console: rx interface verified");
     serial_write_str("[OK] Serial console driver smoke test complete\r\n");
 
+    // Step 14: Task and process data structure smoke test (Phase 2.1.1).
+    //
+    // Exercises the TaskControlBlock / Process data structures from the kernel
+    // library.  All assertions are pure Rust — no hardware access required.
+    //
+    // Expected serial output (via log framework, level INFO):
+    //   "Task/process data structure smoke test (Phase 2.1.1)"
+    //   "[OK] 14.1) TaskId/ProcessId newtype: ..."
+    //   "[OK] 14.2) TaskState: valid transitions accepted"
+    //   "[OK] 14.3) TaskState: invalid transitions rejected"
+    //   "[OK] 14.4) ProcessState: transitions enforced"
+    //   "[OK] 14.5) TaskControlBlock: construction and atomic CAS"
+    //   "[OK] 14.6) Process: construction and task registration ..."
+    //   "[OK] 14.7) Process: task list capacity enforced ..."
+    //   "[OK] 14.8) Process: exit code stored on Exiting state"
+    //   "Task/process data structure smoke test complete"
+    //   "[OK] Task/process data structure smoke test complete"
+    // -----------------------------------------------------------------------
+    serial_write_str("\r\n[...] Task/process data structure smoke test (Phase 2.1.1)\r\n");
+    ferrous_kernel::task::smoke_test();
+    serial_write_str("[OK] Task/process data structure smoke test complete\r\n");
+
+    // Step 15: Address space management smoke test (Phase 2.1.2).
+    //
+    // Exercises AddressSpace (PML4 allocation, map/unmap/translate/destroy)
+    // from the kernel library.  Requires the kernel frame allocator to be
+    // live; we initialise it here using the same memory map as Step 6.
+    //
+    // NOTE: the kernel's frame allocator is a separate static from the boot
+    // crate's FRAME_ALLOC.  Both are initialised from the same memory map but
+    // track state independently.  The smoke test frees every frame it
+    // allocates (via AddressSpace::destroy) so there is no net leak.
+    //
+    // Expected serial output (via log framework, level INFO):
+    //   "Address space smoke test (Phase 2.1.2)"
+    //   "[OK] 15.1) VirtualRegion overlap detection"
+    //   "[OK] 15.2) AddressSpace::new: pml4=0x..."
+    //   "[OK] 15.3) page[0]: va=0x... -> pa=0x..."
+    //   "[OK] 15.3) page[1]: ..."
+    //   "[OK] 15.3) page[2]: ..."
+    //   "[OK] 15.4) unmap_region: mapping removed"
+    //   "[OK] 15.5) invalid regions rejected"
+    //   "[OK] 15.6) AddressSpace::destroy: all frames freed"
+    //   "Address space smoke test complete"
+    //   "[OK] Address space smoke test complete"
+    // -----------------------------------------------------------------------
+    serial_write_str("\r\n[...] Address space smoke test (Phase 2.1.2)\r\n");
+    match ferrous_boot_info::MemoryMap::parse(&boot_info.memory_map) {
+        Ok(kmap) => {
+            // SAFETY: kernel's frame allocator is uninitialised at this point;
+            // single-threaded, interrupts disabled.
+            unsafe { ferrous_kernel::memory::frame_allocator::init(&kmap) };
+            // SAFETY: frame allocator just initialised; CR3 points to the
+            // kernel PML4 set up in Step 7; VA==PA identity mapping holds.
+            unsafe { ferrous_kernel::memory::address_space::smoke_test() };
+            serial_write_str("[OK] Address space smoke test complete\r\n");
+        }
+        Err(_) => {
+            serial_write_str("[SKIP] Address space smoke test: memory map parse failed\r\n");
+        }
+    }
+
     serial_write_str(
         "\r\nKernel halting. Exception handlers active — any CPU exception will be caught.\r\n",
     );
