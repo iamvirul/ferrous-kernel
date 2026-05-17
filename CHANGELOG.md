@@ -33,11 +33,38 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   round-trips, state machine enforcement, atomic CAS behaviour, task
   registration, capacity overflow rejection, and exit-code storage
 
+#### Phase 2.1.2 - Address Space Management
+- `AddressSpace` struct owning an isolated PML4 physical frame and a
+  fixed-capacity region list (32 slots) to avoid heap dependency during
+  early boot (`kernel/src/memory/address_space.rs`)
+- Kernel higher-half entries (PML4[256-511]) copied from the bootstrap
+  PML4 at construction so all address spaces share one kernel mapping
+- `RegionKind` enum (Code / Data / Stack / Heap) with `page_flags()`
+  returning correct x86-64 PTE flags (`PRESENT | USER_ACCESSIBLE`, plus
+  `WRITABLE` for non-code kinds)
+- `VirtualRegion` with `overlaps()` guard enforced by `map_region`
+- `map_4k_into` / `unmap_4k_from` — page-table walkers operating on an
+  explicit PML4 physical address; exploit VA==PA identity mapping
+  established in Phase 1.3.3
+- `AddressSpace::map_region` validates user-space bounds, alignment, and
+  no-overlap; rolls back already-mapped pages on partial failure
+- `AddressSpace::unmap_region` clears PTEs, frees per-page frames, and
+  compacts the region list via swap-with-last
+- `AddressSpace::translate` translates a VA in this space without
+  touching CR3
+- `AddressSpace::switch_to` loads this space's PML4 into CR3 (full TLB
+  flush)
+- `AddressSpace::destroy` tears down all user regions and frees the PML4
+  frame
+- `memory::address_space::smoke_test()` with 6 test cases covering
+  overlap detection, construction, map+translate, unmap, invalid-input
+  rejection, and destroy
+
 #### Documentation and Tooling
 - README badges: CI, Release, CodeQL, latest release version, license,
   Rust language, and architecture
-- ROADMAP.md: current phase updated to Phase 2; task 2.1.1 marked
-  complete
+- ROADMAP.md: current phase updated to Phase 2; tasks 2.1.1 and 2.1.2
+  marked complete
 - ARCHITECTURE.md: Scheduler abstractions section updated with
   implemented types and file locations; boot sequence annotated with
   v0.1.0 completion status

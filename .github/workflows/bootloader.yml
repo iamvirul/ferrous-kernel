@@ -5,11 +5,15 @@ on:
     branches: [ main, 'phase-*', 'feature/*' ]
     paths:
       - 'boot/**'
+      - 'kernel/**'
+      - 'lib/**'
       - '.github/workflows/bootloader.yml'
   pull_request:
     branches: [ main ]
     paths:
       - 'boot/**'
+      - 'kernel/**'
+      - 'lib/**'
       - '.github/workflows/bootloader.yml'
 
 permissions:
@@ -217,6 +221,29 @@ jobs:
             "serial_console: fmt::Write verified"
             "serial_console: rx interface verified"
             "Serial console driver smoke test complete"
+
+            # Phase 2.1.1 — task and process data structures
+            "Task/process data structure smoke test (Phase 2.1.1)"
+            "[OK] 14.1) TaskId/ProcessId newtype:"
+            "[OK] 14.2) TaskState: valid transitions accepted"
+            "[OK] 14.3) TaskState: invalid transitions rejected"
+            "[OK] 14.4) ProcessState: transitions enforced"
+            "[OK] 14.5) TaskControlBlock: construction and atomic CAS"
+            "[OK] 14.6) Process: construction and task registration"
+            "[OK] 14.7) Process: task list capacity enforced"
+            "[OK] 14.8) Process: exit code stored on Exiting state"
+            "Task/process data structure smoke test complete"
+            "[OK] Task/process data structure smoke test complete"
+
+            # Phase 2.1.2 — address space management
+            "Address space smoke test (Phase 2.1.2)"
+            "[OK] 15.1) VirtualRegion overlap detection"
+            "[OK] 15.2) AddressSpace::new: pml4="
+            "[OK] 15.4) unmap_region: mapping removed"
+            "[OK] 15.5) invalid regions rejected"
+            "[OK] 15.6) AddressSpace::destroy: all frames freed"
+            "Address space smoke test complete"
+            "[OK] Address space smoke test complete"
           )
 
           FAILED=0

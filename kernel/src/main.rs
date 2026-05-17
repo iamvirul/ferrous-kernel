@@ -1,8 +1,8 @@
-//! Ferrous Kernel — main entry
+//! Ferrous Kernel — binary entry
 //!
-//! This file is the crate root for the kernel binary. It declares the
-//! architecture-specific entry module, the device driver collection, and
-//! provides the global panic handler.
+//! Declares architecture-specific and driver modules, and provides the global
+//! panic handler.  The `memory` and `task` subsystems live in `lib.rs` and are
+//! re-used by the bootloader for early smoke tests (Steps 14–15).
 //!
 //! The actual entry point (`kernel_entry`) is defined in the bootloader for
 //! Phase 1. When ELF loading is implemented the entry point will move here.
@@ -13,8 +13,6 @@
 pub mod arch;
 pub mod drivers;
 pub mod logger;
-pub mod memory;
-pub mod task;
 
 use drivers::serial::SerialPort;
 
@@ -42,6 +40,7 @@ use drivers::serial::SerialPort;
 /// UART having been configured by the bootloader before kernel handoff. If a
 /// panic fires before that point the output may be garbled, but that is far
 /// better than silently looping forever.
+#[cfg(not(test))]
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
     let serial = SerialPort::new();

@@ -1,6 +1,6 @@
 # Ferrous Kernel - Development Roadmap
 
-**Last Updated:** 2026-05-16
+**Last Updated:** 2026-05-17
 **Status:** Phase 2 — Core Kernel Services (Current)
 
 ---
@@ -163,7 +163,7 @@ Every milestone must advance these core goals:
 | Task | Issue | Status | Priority |
 |------|-------|--------|----------|
 | 2.1.1 Task and Process Data Structures | #66 | Complete (PR #145) | Critical |
-| 2.1.2 Address Space Management | #67 | Not Started | Critical |
+| 2.1.2 Address Space Management | #67 | Complete (PR #149) | Critical |
 | 2.1.3 ELF Binary Loader | #68 | Not Started | High |
 | 2.1.4 Kernel/User Mode Transition | #69 | Not Started | Critical |
 | 2.1.5 System Call Interface (minimal) | #70 | Not Started | Critical |
