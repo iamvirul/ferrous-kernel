@@ -24,7 +24,7 @@ jobs:
       models: read
 
     steps:
-      - uses: iamvirul/PairReviewer@v1
+      - uses: iamvirul/PairReviewer@3f4310dad066ba5683924649ea77bc316a3c41f6
         with:
           reviewer-token: ${{ secrets.REVIEWER_PAT }}
           models-token: ${{ secrets.MODELS_PAT }}
