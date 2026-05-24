@@ -60,6 +60,13 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   overlap detection, construction, map+translate, unmap, invalid-input
   rejection, and destroy
 
+#### Phase 2.1.3 - ELF Binary Loader
+- `kernel/src/task/elf.rs` module added for statically-linked ELF64 executable parsing and loading.
+- Safe `read_struct` parsing to map byte slices into `#[repr(C)]` ELF headers without allocations or external dependencies.
+- `load_elf` loads `PT_LOAD` segments into a target `AddressSpace` with page-aligned mappings (`RegionKind::Code` and `RegionKind::Data`), including BSS zero-filling.
+- `ParseError` enum provides robust error handling for invalid binaries.
+- `elf::smoke_test()` added to test loader parsing and mapping functionality.
+
 #### Documentation and Tooling
 - README badges: CI, Release, CodeQL, latest release version, license,
   Rust language, and architecture

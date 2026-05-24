@@ -164,7 +164,7 @@ Every milestone must advance these core goals:
 |------|-------|--------|----------|
 | 2.1.1 Task and Process Data Structures | #66 | Complete (PR #145) | Critical |
 | 2.1.2 Address Space Management | #67 | Complete (PR #149) | Critical |
-| 2.1.3 ELF Binary Loader | #68 | Not Started | High |
+| 2.1.3 ELF Binary Loader | #69 | Complete | High |
 | 2.1.4 Kernel/User Mode Transition | #69 | Not Started | Critical |
 | 2.1.5 System Call Interface (minimal) | #70 | Not Started | Critical |
 
