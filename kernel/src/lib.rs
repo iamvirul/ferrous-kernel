@@ -12,5 +12,7 @@
 
 #![no_std]
 
+extern crate alloc;
+
 pub mod memory;
 pub mod task;

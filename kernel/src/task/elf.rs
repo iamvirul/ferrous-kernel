@@ -5,6 +5,7 @@
 
 use crate::memory::address_space::{AddressSpace, RegionKind, VirtualRegion};
 use crate::memory::paging::VirtualAddress;
+use alloc::vec::Vec;
 
 /// Errors that can occur during ELF parsing and loading.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -106,7 +107,18 @@ pub mod raw {
 /// Load an ELF64 executable into the given address space.
 ///
 /// Returns the virtual address of the entry point upon success.
-pub fn load_elf(elf_data: &[u8], aspace: &mut AddressSpace) -> Result<VirtualAddress, ParseError> {
+///
+/// # Safety
+///
+/// Callers must guarantee the following preconditions:
+/// - Paging is initialized and active
+/// - An identity mapping exists for the kernel (higher-half is mapped)
+/// - Execution is in a single-threaded context (no other threads can run)
+/// - Interrupts are disabled
+///
+/// These preconditions are required by [`load_elf`], [`AddressSpace::map_region`],
+/// and [`AddressSpace::switch_to`].
+pub unsafe fn load_elf(elf_data: &[u8], aspace: &mut AddressSpace) -> Result<VirtualAddress, ParseError> {
     use raw::*;
 
     let ehdr: Elf64_Ehdr = read_struct(elf_data, 0)?;
@@ -140,10 +152,19 @@ pub fn load_elf(elf_data: &[u8], aspace: &mut AddressSpace) -> Result<VirtualAdd
 
     let mut entry_point_valid = false;
     let entry_va = ehdr.e_entry;
+    let mut mapped_regions: Vec<VirtualAddress> = Vec::new();
 
     for i in 0..phnum {
         let offset = phoff.saturating_add(i.saturating_mul(phentsize));
-        let phdr: Elf64_Phdr = read_struct(elf_data, offset)?;
+        let phdr: Elf64_Phdr = read_struct(elf_data, offset).map_err(|e| {
+            // Unmap all successfully mapped regions before returning error
+            unsafe {
+                for &region_base in &mapped_regions {
+                    let _ = aspace.unmap_region(region_base);
+                }
+            }
+            e
+        })?;
 
         if phdr.p_type == PT_LOAD {
             if phdr.p_memsz == 0 {
@@ -151,20 +172,37 @@ pub fn load_elf(elf_data: &[u8], aspace: &mut AddressSpace) -> Result<VirtualAdd
             }
 
             if phdr.p_filesz > phdr.p_memsz {
+                // Unmap all successfully mapped regions before returning error
+                unsafe {
+                    for &region_base in &mapped_regions {
+                        let _ = aspace.unmap_region(region_base);
+                    }
+                }
                 return Err(ParseError::InvalidSegment);
             }
 
-            let kind = if (phdr.p_flags & PF_W) != 0 {
+            let kind = if (phdr.p_flags & PF_X) != 0 {
+                RegionKind::Code
+            } else if (phdr.p_flags & PF_W) != 0 {
                 RegionKind::Data
             } else {
-                RegionKind::Code
+                // Read-only data (PF_R only)
+                RegionKind::Data
             };
 
             let base = phdr.p_vaddr & !0xFFF;
             let end = (phdr.p_vaddr.saturating_add(phdr.p_memsz) + 0xFFF) & !0xFFF;
             let size = (end - base) as usize;
 
-            let va = VirtualAddress::try_new(base).ok_or(ParseError::MapError)?;
+            let va = VirtualAddress::try_new(base).ok_or_else(|| {
+                // Unmap all successfully mapped regions before returning error
+                unsafe {
+                    for &region_base in &mapped_regions {
+                        let _ = aspace.unmap_region(region_base);
+                    }
+                }
+                ParseError::MapError
+            })?;
             let region = VirtualRegion {
                 base: va,
                 size,
@@ -175,8 +213,17 @@ pub fn load_elf(elf_data: &[u8], aspace: &mut AddressSpace) -> Result<VirtualAdd
             unsafe {
                 aspace
                     .map_region(region)
-                    .map_err(|_| ParseError::MapError)?;
+                    .map_err(|_| {
+                        // Unmap all successfully mapped regions before returning error
+                        for &region_base in &mapped_regions {
+                            let _ = aspace.unmap_region(region_base);
+                        }
+                        ParseError::MapError
+                    })?;
             }
+
+            // Track successfully mapped region for potential cleanup
+            mapped_regions.push(va);
 
             // SAFETY: We switch to the new address space to copy data into it.
             // The kernel higher-half is shared across all address spaces, so we
@@ -208,6 +255,10 @@ pub fn load_elf(elf_data: &[u8], aspace: &mut AddressSpace) -> Result<VirtualAdd
                 core::arch::asm!("mov cr3, {cr3}", cr3 = in(reg) current_cr3, options(nostack));
 
                 if !copy_ok {
+                    // Unmap all successfully mapped regions before returning error
+                    for &region_base in &mapped_regions {
+                        let _ = aspace.unmap_region(region_base);
+                    }
                     return Err(ParseError::InvalidSegment);
                 }
             }
@@ -222,10 +273,24 @@ pub fn load_elf(elf_data: &[u8], aspace: &mut AddressSpace) -> Result<VirtualAdd
     }
 
     if !entry_point_valid {
+        // Unmap all successfully mapped regions before returning error
+        unsafe {
+            for &region_base in &mapped_regions {
+                let _ = aspace.unmap_region(region_base);
+            }
+        }
         return Err(ParseError::InvalidEntryPoint);
     }
 
-    VirtualAddress::try_new(entry_va).ok_or(ParseError::InvalidEntryPoint)
+    VirtualAddress::try_new(entry_va).ok_or_else(|| {
+        // Unmap all successfully mapped regions before returning error
+        unsafe {
+            for &region_base in &mapped_regions {
+                let _ = aspace.unmap_region(region_base);
+            }
+        }
+        ParseError::InvalidEntryPoint
+    })
 }
 
 pub unsafe fn smoke_test() {
