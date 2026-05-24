@@ -21,6 +21,7 @@
 //! - `repr(C)` on [`RegisterState`] and [`TaskControlBlock`] keeps field
 //!   offsets stable for the context-switch assembly added in Phase 2.2.3.
 
+pub mod elf;
 pub mod process;
 pub mod task;
 
@@ -144,5 +145,6 @@ pub fn smoke_test() {
     assert_eq!(proc.exit_code(), Some(0));
     log::info!("[OK] 14.8) Process: exit code stored on Exiting state");
 
+    unsafe { elf::smoke_test() };
     log::info!("Task/process data structure smoke test complete");
 }
