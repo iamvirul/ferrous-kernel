@@ -159,14 +159,14 @@ pub unsafe fn load_elf(
 
     for i in 0..phnum {
         let offset = phoff.saturating_add(i.saturating_mul(phentsize));
-        let phdr: Elf64_Phdr = read_struct(elf_data, offset).map_err(|e| {
+        let phdr: Elf64_Phdr = read_struct(elf_data, offset).map_err(|_| {
             // Unmap all successfully mapped regions before returning error
             unsafe {
                 for &region_base in &mapped_regions {
                     let _ = aspace.unmap_region(region_base);
                 }
             }
-            e
+            ParseError::InvalidProgramHeaders
         })?;
 
         if phdr.p_type == PT_LOAD {
