@@ -1799,6 +1799,10 @@ fn kernel_main(boot_info: &KernelBootInfo) -> ! {
             // reserved; CR3 is valid; VA==PA holds; single-threaded.
             unsafe { ferrous_kernel::memory::address_space::smoke_test() };
             serial_write_str("[OK] Address space smoke test complete\r\n");
+
+            serial_write_str("\r\n[...] ELF loader smoke test (Phase 2.1.3)\r\n");
+            unsafe { ferrous_kernel::task::elf::smoke_test() };
+            serial_write_str("[OK] ELF loader smoke test complete\r\n");
         }
         Err(_) => {
             serial_write_str("[SKIP] Address space smoke test: memory map parse failed\r\n");

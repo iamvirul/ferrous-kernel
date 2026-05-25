@@ -118,7 +118,10 @@ pub mod raw {
 ///
 /// These preconditions are required by [`load_elf`], [`AddressSpace::map_region`],
 /// and [`AddressSpace::switch_to`].
-pub unsafe fn load_elf(elf_data: &[u8], aspace: &mut AddressSpace) -> Result<VirtualAddress, ParseError> {
+pub unsafe fn load_elf(
+    elf_data: &[u8],
+    aspace: &mut AddressSpace,
+) -> Result<VirtualAddress, ParseError> {
     use raw::*;
 
     let ehdr: Elf64_Ehdr = read_struct(elf_data, 0)?;
@@ -211,55 +214,59 @@ pub unsafe fn load_elf(elf_data: &[u8], aspace: &mut AddressSpace) -> Result<Vir
 
             // SAFETY: aspace is exclusively borrowed. We are in single-threaded context.
             unsafe {
-                aspace
-                    .map_region(region)
-                    .map_err(|_| {
-                        // Unmap all successfully mapped regions before returning error
-                        for &region_base in &mapped_regions {
-                            let _ = aspace.unmap_region(region_base);
-                        }
-                        ParseError::MapError
-                    })?;
+                aspace.map_region(region).map_err(|_| {
+                    // Unmap all successfully mapped regions before returning error
+                    for &region_base in &mapped_regions {
+                        let _ = aspace.unmap_region(region_base);
+                    }
+                    ParseError::MapError
+                })?;
             }
 
             // Track successfully mapped region for potential cleanup
             mapped_regions.push(va);
 
-            // SAFETY: We switch to the new address space to copy data into it.
-            // The kernel higher-half is shared across all address spaces, so we
-            // continue executing here seamlessly. We disable interrupts to prevent
-            // context switches while operating in another process's address space.
+            // SAFETY: We do not switch to the new address space to copy data.
+            // Instead, we translate each virtual address to its physical frame
+            // and write via the kernel's higher-half identity alias. This avoids
+            // CR3 switches, which would fault if executed from the bootloader's
+            // lower-half identity mapping.
             unsafe {
-                let current_cr3: u64;
-                core::arch::asm!("mov {cr3}, cr3", cr3 = out(reg) current_cr3, options(nomem, nostack));
-
-                aspace.switch_to();
-
                 // Zero out the entire mapped region first (to cover BSS)
-                core::ptr::write_bytes(base as *mut u8, 0, size);
+                for page_idx in 0..(size / 4096) {
+                    let page_va = base + (page_idx * 4096) as u64;
+                    let va = VirtualAddress::try_new(page_va).unwrap();
+                    let pa = aspace.translate(va).expect("page should be mapped");
+                    let page_ptr = (pa + 0xFFFF_8000_0000_0000) as *mut u8;
+                    core::ptr::write_bytes(page_ptr, 0, 4096);
+                }
 
                 // Copy filesz bytes from elf_data
                 let file_start = phdr.p_offset as usize;
                 let file_end = file_start.saturating_add(phdr.p_filesz as usize);
 
-                let mut copy_ok = true;
                 if file_end > elf_data.len() {
-                    copy_ok = false;
-                } else {
-                    let src = elf_data[file_start..file_end].as_ptr();
-                    let dst = phdr.p_vaddr as *mut u8;
-                    core::ptr::copy_nonoverlapping(src, dst, phdr.p_filesz as usize);
-                }
-
-                // Restore previous address space
-                core::arch::asm!("mov cr3, {cr3}", cr3 = in(reg) current_cr3, options(nostack));
-
-                if !copy_ok {
                     // Unmap all successfully mapped regions before returning error
                     for &region_base in &mapped_regions {
                         let _ = aspace.unmap_region(region_base);
                     }
                     return Err(ParseError::InvalidSegment);
+                }
+
+                let src = elf_data[file_start..file_end].as_ptr();
+                let mut copied = 0;
+                while copied < phdr.p_filesz as usize {
+                    let va_byte = phdr.p_vaddr + copied as u64;
+                    let va = VirtualAddress::try_new(va_byte).unwrap();
+                    let pa = aspace.translate(va).expect("page should be mapped");
+                    let ptr = (pa + 0xFFFF_8000_0000_0000) as *mut u8;
+
+                    let page_offset = (va_byte & 0xFFF) as usize;
+                    let chunk_size =
+                        core::cmp::min(4096 - page_offset, (phdr.p_filesz as usize) - copied);
+
+                    core::ptr::copy_nonoverlapping(src.add(copied), ptr, chunk_size);
+                    copied += chunk_size;
                 }
             }
 
@@ -380,5 +387,5 @@ pub unsafe fn smoke_test() {
     aspace.destroy();
     aspace2.destroy();
 
-    log::info!("[OK] 14.9) ELF loader tests passed");
+    log::info!("[OK] 16.1) ELF loader tests passed");
 }
