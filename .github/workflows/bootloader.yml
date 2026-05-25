@@ -244,6 +244,11 @@ jobs:
             "[OK] 15.6) AddressSpace::destroy: all frames freed"
             "Address space smoke test complete"
             "[OK] Address space smoke test complete"
+
+            # Phase 2.1.3 — ELF loader
+            "ELF loader smoke test (Phase 2.1.3)"
+            "[OK] 16.1) ELF loader tests passed"
+            "[OK] ELF loader smoke test complete"
           )
 
           FAILED=0
