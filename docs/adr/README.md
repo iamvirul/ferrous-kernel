@@ -83,6 +83,7 @@ ADRs have the following statuses:
 | Number | Title | Status | Date |
 |--------|-------|--------|------|
 | ADR-0001 | [Kernel Entry Point Handoff and UEFI Boot Services Exit Strategy](ADR-0001-kernel-entry-point-handoff.md) | Approved | 2026-03-01 |
+| ADR-0002 | [Kernel and User Mode Transition Mechanism](ADR-0002-kernel-user-mode-transition.md) | Proposed | 2026-05-27 |
 
 ---
 
