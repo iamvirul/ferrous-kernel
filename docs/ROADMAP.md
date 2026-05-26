@@ -67,7 +67,7 @@ Every milestone must advance these core goals:
 
 | ADR | Title | Status |
 |-----|-------|--------|
-| [ADR-0001](adr/ADR-0001-kernel-entry-point-handoff.md) | Kernel Entry Point Handoff and UEFI Boot Services Exit Strategy | Approved |
+| ADR-0001 | [Kernel Entry Point Handoff and UEFI Boot Services Exit Strategy](adr/ADR-0001-kernel-entry-point-handoff.md) | Approved |
 
 ### Milestones
 
@@ -151,10 +151,11 @@ Every milestone must advance these core goals:
 
 | ADR | Title | Status |
 |-----|-------|--------|
-| ADR-0002 | Process Model and Task Representation | Proposed |
-| ADR-0003 | Scheduler Algorithm Selection | Proposed |
-| ADR-0004 | Capability System Data Structures | Proposed |
-| ADR-0005 | IPC Mechanism Design | Proposed |
+| ADR-0002 | [Kernel and User Mode Transition Mechanism](adr/ADR-0002-kernel-user-mode-transition.md) | Proposed |
+| ADR-0003 | Process Model and Task Representation | Proposed |
+| ADR-0004 | Scheduler Algorithm Selection | Proposed |
+| ADR-0005 | Capability System Data Structures | Proposed |
+| ADR-0006 | IPC Mechanism Design | Proposed |
 
 ### Milestones
 
