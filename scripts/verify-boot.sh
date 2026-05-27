@@ -233,51 +233,57 @@ run_and_verify() {
         KVM_FLAG="-enable-kvm"
     fi
 
-    # Run QEMU in the background, writing serial to a log file.
-    qemu-system-x86_64 \
-        $KVM_FLAG \
-        -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
-        -drive format=raw,file=fat:rw:"$BOOT_DISK" \
-        -m 256M \
-        -serial "file:${SERIAL_LOG}" \
-        -no-reboot \
-        -display none &
-
-    QEMU_PID=$!
-
-    # Poll the log file until all expected strings appear or timeout expires.
-    ELAPSED=0
-    FOUND=0
-
-    while [[ $ELAPSED -lt $TIMEOUT ]]; do
-        sleep 1
-        ELAPSED=$((ELAPSED + 1))
-
-        # Check that QEMU is still alive.
-        if ! kill -0 "$QEMU_PID" 2>/dev/null; then
-            break
+    # Run QEMU synchronously under `timeout`.  The kernel halts via a `hlt`
+    # loop, so QEMU keeps running until the timeout kills it (exit 124).
+    # We suppress the non-zero exit so `set -e` doesn't abort the script.
+    #
+    # macOS ships GNU coreutils via Homebrew as `gtimeout`; Linux has `timeout`.
+    TIMEOUT_CMD="timeout"
+    if ! command -v timeout &>/dev/null; then
+        if command -v gtimeout &>/dev/null; then
+            TIMEOUT_CMD="gtimeout"
+        else
+            # No timeout available — run QEMU in background and kill after TIMEOUT.
+            qemu-system-x86_64 \
+                $KVM_FLAG \
+                -machine q35 \
+                -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
+                -drive format=raw,file=fat:rw:"$BOOT_DISK" \
+                -m 256M \
+                -serial "file:${SERIAL_LOG}" \
+                -no-reboot \
+                -display none &
+            QEMU_PID=$!
+            sleep "$TIMEOUT" || true
+            kill "$QEMU_PID" 2>/dev/null || true
+            wait "$QEMU_PID" 2>/dev/null || true
+            TIMEOUT_CMD=""
         fi
+    fi
 
-        # Check if all expected strings are present.
-        ALL_FOUND=1
-        for s in "${EXPECTED_STRINGS[@]}"; do
-            if ! grep -qF "$s" "$SERIAL_LOG" 2>/dev/null; then
-                ALL_FOUND=0
-                break
-            fi
-        done
+    if [[ -n "$TIMEOUT_CMD" ]]; then
+        "$TIMEOUT_CMD" "${TIMEOUT}s" qemu-system-x86_64 \
+            $KVM_FLAG \
+            -machine q35 \
+            -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
+            -drive format=raw,file=fat:rw:"$BOOT_DISK" \
+            -m 256M \
+            -serial "file:${SERIAL_LOG}" \
+            -no-reboot \
+            -display none || true
+    fi
 
-        if [[ $ALL_FOUND -eq 1 ]]; then
-            FOUND=1
+    # QEMU has exited (or been killed by timeout); all serial output is now
+    # flushed to $SERIAL_LOG.  Check every expected string.
+    ALL_FOUND=1
+    for s in "${EXPECTED_STRINGS[@]}"; do
+        if ! grep -qF "$s" "$SERIAL_LOG" 2>/dev/null; then
+            ALL_FOUND=0
             break
         fi
     done
 
-    # Kill QEMU regardless of outcome.
-    kill "$QEMU_PID" 2>/dev/null || true
-    wait "$QEMU_PID" 2>/dev/null || true
-
-    return $((1 - FOUND))
+    return $((1 - ALL_FOUND))
 }
 
 # ---------------------------------------------------------------------------
