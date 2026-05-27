@@ -678,6 +678,7 @@ impl<const WORDS: usize> BitmapFrameAllocator<WORDS> {
         );
 
         self.total_frames = WORDS * 64;
+        self.free_frames = 0; // Will be incremented by set_range_free
 
         // Mark all immediately-usable (conventional) regions as free.
         for region in map.usable_regions() {
@@ -686,8 +687,42 @@ impl<const WORDS: usize> BitmapFrameAllocator<WORDS> {
             self.set_range_free(start_pfn, end_pfn);
         }
 
-        // Derive free_frames by counting set bits (one accurate pass at init).
-        self.free_frames = self.count_free_in_bitmap();
+        self.next_hint = 0;
+    }
+
+    /// Like [`init_from_memory_map`] but only marks frames whose physical
+    /// address is **strictly below** `phys_limit` as free.
+    ///
+    /// This avoids writing to the portions of the 2 MiB BSS bitmap that
+    /// correspond to physical addresses above `phys_limit`, which would
+    /// cause thousands of demand-page faults in TCG/emulated environments.
+    ///
+    /// # Panics (debug builds only)
+    ///
+    /// Asserts that `total_frames == 0` before initialisation to catch
+    /// double-init bugs.
+    pub fn init_from_memory_map_below(&mut self, map: &MemoryMap, phys_limit: u64) {
+        debug_assert_eq!(
+            self.total_frames, 0,
+            "init_from_memory_map_below() called more than once"
+        );
+
+        // Even though only the low portion is usable, the allocator still
+        // tracks the full address space (so PFN arithmetic is correct).
+        self.total_frames = WORDS * 64;
+        self.free_frames = 0;
+
+        let limit_pfn = (phys_limit / PAGE_SIZE as u64) as usize;
+
+        for region in map.usable_regions() {
+            let start_pfn = (region.phys_start / PAGE_SIZE) as usize;
+            // Clamp each region to [start, phys_limit).
+            let end_pfn = (start_pfn + region.page_count as usize).min(limit_pfn);
+            if start_pfn < end_pfn {
+                self.set_range_free(start_pfn, end_pfn);
+            }
+        }
+
         self.next_hint = 0;
     }
 
@@ -702,24 +737,58 @@ impl<const WORDS: usize> BitmapFrameAllocator<WORDS> {
             return;
         }
         let start_pfn = (phys_start / PAGE_SIZE) as usize;
-        // Round up to next page boundary.
-        let end_pfn = ((phys_start + size_bytes + PAGE_SIZE - 1) / PAGE_SIZE) as usize;
+        // Round up to the next page boundary, saturating to avoid u64 overflow.
+        let end_addr = phys_start.saturating_add(size_bytes);
+        let end_pfn_raw = if end_addr == u64::MAX {
+            (end_addr / PAGE_SIZE) as usize + 1
+        } else {
+            ((end_addr + PAGE_SIZE - 1) / PAGE_SIZE) as usize
+        };
+        // Cap at the bitmap boundary — no frame beyond WORDS*64 can be tracked.
+        let end_pfn = end_pfn_raw.min(WORDS * 64);
 
-        for pfn in start_pfn..end_pfn {
-            let word = pfn / 64;
-            let bit = pfn % 64;
-            if word < WORDS {
-                let mask = 1u64 << bit;
-                if self.bitmap[word] & mask != 0 {
-                    // Frame was free — removing it from the pool.
-                    self.bitmap[word] &= !mask;
-                    self.free_frames = self.free_frames.saturating_sub(1);
-                }
-            }
+        if start_pfn >= end_pfn {
+            return;
+        }
+
+        let start_word = start_pfn / 64;
+        let end_word = (end_pfn + 63) / 64; // round up to cover partial last word
+
+        for word in start_word..end_word.min(WORDS) {
+            // Build a mask of bits to clear in this word.
+            let bit_lo = if word == start_word {
+                start_pfn % 64
+            } else {
+                0
+            };
+            let bit_hi = if word + 1 == end_word && end_pfn % 64 != 0 {
+                end_pfn % 64
+            } else {
+                64
+            };
+
+            let mask_lo = if bit_lo == 0 {
+                u64::MAX
+            } else {
+                !((1u64 << bit_lo) - 1)
+            };
+            let mask_hi = if bit_hi >= 64 {
+                u64::MAX
+            } else {
+                (1u64 << bit_hi) - 1
+            };
+            let mask = mask_lo & mask_hi;
+
+            let was_free = self.bitmap[word] & mask;
+            self.bitmap[word] &= !mask;
+            // Count how many free frames we just removed.
+            self.free_frames = self
+                .free_frames
+                .saturating_sub(was_free.count_ones() as usize);
         }
 
         // Rewind hint in case we just reserved frames before it.
-        let hint_candidate = start_pfn / 64;
+        let hint_candidate = start_word;
         if hint_candidate < self.next_hint {
             self.next_hint = hint_candidate;
         }
@@ -737,12 +806,8 @@ impl<const WORDS: usize> BitmapFrameAllocator<WORDS> {
     ///
     /// Returns `None` if no free frames are available.
     pub fn allocate(&mut self) -> Option<PhysFrame> {
-        if self.free_frames == 0 {
-            return None;
-        }
-
-        // Search from hint; wrap to 0 if needed.
-        let pfn = self.find_free_from(self.next_hint).or_else(|| {
+        let bit_index = self.find_free_from(self.next_hint).or_else(|| {
+            // If the hint missed, search from the beginning.
             if self.next_hint > 0 {
                 self.find_free_from(0)
             } else {
@@ -750,14 +815,14 @@ impl<const WORDS: usize> BitmapFrameAllocator<WORDS> {
             }
         })?;
 
-        // Mark the frame allocated (clear bit).
-        let word = pfn / 64;
-        let bit = pfn % 64;
+        let word = bit_index / 64;
+        let bit = bit_index % 64;
         self.bitmap[word] &= !(1u64 << bit);
-        self.free_frames -= 1;
-        self.next_hint = word;
 
-        Some(PhysFrame::from_pfn(pfn as u64))
+        self.next_hint = word;
+        self.free_frames = self.free_frames.saturating_sub(1);
+
+        Some(PhysFrame::from_pfn(bit_index as u64))
     }
 
     /// Returns a physical frame to the free pool.
@@ -771,22 +836,17 @@ impl<const WORDS: usize> BitmapFrameAllocator<WORDS> {
         let pfn = frame.pfn() as usize;
         let word = pfn / 64;
         let bit = pfn % 64;
-        debug_assert!(
-            word < WORDS,
-            "deallocate: PhysFrame pfn={} is outside allocator range (max {})",
-            pfn,
-            WORDS * 64
-        );
-        debug_assert!(
-            self.bitmap[word] & (1u64 << bit) == 0,
-            "deallocate: double-free detected for PhysFrame pfn={}",
-            pfn
-        );
-        self.bitmap[word] |= 1u64 << bit;
-        self.free_frames += 1;
-        // Allow the next allocation to reuse this frame quickly.
-        if word < self.next_hint {
-            self.next_hint = word;
+
+        if word < WORDS {
+            let mask = 1u64 << bit;
+            if self.bitmap[word] & mask == 0 {
+                // Frame was not free — adding it back to the pool.
+                self.bitmap[word] |= mask;
+                self.free_frames = self.free_frames.saturating_add(1);
+            }
+            if word < self.next_hint {
+                self.next_hint = word;
+            }
         }
     }
 
@@ -817,15 +877,47 @@ impl<const WORDS: usize> BitmapFrameAllocator<WORDS> {
     // Private helpers
     // -----------------------------------------------------------------------
 
-    /// Sets all frames in `[start_pfn, end_pfn)` as free (bit = 1).
-    /// Frames beyond `WORDS * 64` are silently ignored.
+    /// Marks the given PFN range as free.
+    ///
+    /// Automatically increments `self.free_frames` for bits that transition
+    /// from 0 to 1.
     fn set_range_free(&mut self, start_pfn: usize, end_pfn: usize) {
-        for pfn in start_pfn..end_pfn {
-            let word = pfn / 64;
-            let bit = pfn % 64;
-            if word < WORDS {
-                self.bitmap[word] |= 1u64 << bit;
-            }
+        if start_pfn >= end_pfn {
+            return;
+        }
+
+        let start_word = start_pfn / 64;
+        let end_word = (end_pfn + 63) / 64;
+
+        for word in start_word..end_word.min(WORDS) {
+            let bit_lo = if word == start_word {
+                start_pfn % 64
+            } else {
+                0
+            };
+            let bit_hi = if word + 1 == end_word && end_pfn % 64 != 0 {
+                end_pfn % 64
+            } else {
+                64
+            };
+
+            let mask_lo = if bit_lo == 0 {
+                u64::MAX
+            } else {
+                !((1u64 << bit_lo) - 1)
+            };
+            let mask_hi = if bit_hi >= 64 {
+                u64::MAX
+            } else {
+                (1u64 << bit_hi) - 1
+            };
+            let mask = mask_lo & mask_hi;
+
+            let was_reserved = !self.bitmap[word] & mask;
+            self.bitmap[word] |= mask;
+            self.free_frames = self
+                .free_frames
+                .saturating_add(was_reserved.count_ones() as usize);
         }
     }
 
@@ -839,12 +931,6 @@ impl<const WORDS: usize> BitmapFrameAllocator<WORDS> {
             }
         }
         None
-    }
-
-    /// Counts free frames by scanning the full bitmap (O(WORDS)).
-    /// Used once at init to establish the initial `free_frames` count.
-    fn count_free_in_bitmap(&self) -> usize {
-        self.bitmap.iter().map(|w| w.count_ones() as usize).sum()
     }
 }
 
