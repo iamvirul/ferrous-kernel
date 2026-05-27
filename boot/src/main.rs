@@ -96,7 +96,7 @@ const KERNEL_STACK_GUARD_SIZE: usize = 4 * 1024;
 ///
 /// SAFETY: switched to exactly once from `kernel_main` before any other
 /// stack writes occur. Single-core, interrupts-disabled environment.
-#[repr(C, align(16))]
+#[repr(C, align(4096))]
 struct KernelStack([u8; KERNEL_STACK_SIZE]);
 
 static mut KERNEL_STACK: KernelStack = KernelStack([0u8; KERNEL_STACK_SIZE]);
@@ -1765,23 +1765,13 @@ fn kernel_main(boot_info: &KernelBootInfo) -> ! {
         Ok(kmap) => {
             // SAFETY: kernel's frame allocator is uninitialised at this point;
             // single-threaded, interrupts disabled.
-            unsafe { ferrous_kernel::memory::frame_allocator::init(&kmap) };
-
-            // Fence the allocator to the bootstrap identity-mapped window
-            // [0, 1 GiB).  The CR3 loaded in Step 7 identity-maps only
-            // [0, 0x4000_0000); `address_space::smoke_test` dereferences
-            // page-table frame addresses directly (VA == PA).  Any frame at
-            // or above 1 GiB is outside the mapped window and would cause a
-            // page fault when written.  Mark everything from 1 GiB upward as
-            // reserved so the allocator never hands out such a frame.
+            // Use init_below so we only mark frames in the 1 GiB identity-
+            // mapped window as free — this avoids writing to the upper 15/16
+            // of the 2 MiB BSS bitmap (which would cause ~250k page faults in
+            // QEMU TCG mode and hang the emulator).
             const IDENTITY_MAP_END: u64 = 0x4000_0000; // 1 GiB
-                                                       // SAFETY: frame allocator is initialised (line above); single-
-                                                       // threaded with interrupts disabled.
             unsafe {
-                ferrous_kernel::memory::frame_allocator::mark_reserved(
-                    IDENTITY_MAP_END,
-                    u64::MAX - IDENTITY_MAP_END,
-                );
+                ferrous_kernel::memory::frame_allocator::init_below(&kmap, IDENTITY_MAP_END);
             }
 
             // The kernel allocator was seeded from the raw memory map, which
