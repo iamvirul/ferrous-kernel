@@ -1793,6 +1793,38 @@ fn kernel_main(boot_info: &KernelBootInfo) -> ! {
             serial_write_str("\r\n[...] ELF loader smoke test (Phase 2.1.3)\r\n");
             unsafe { ferrous_kernel::task::elf::smoke_test() };
             serial_write_str("[OK] ELF loader smoke test complete\r\n");
+
+            // ---------------------------------------------------------------
+            // Step 17: Kernel / User Mode Transition smoke test (Phase 2.1.4)
+            //
+            // Exercises the full ring-0 → ring-3 → SYSCALL → ring-0 → SYSRET
+            // → ring-3 transition path.
+            //
+            // Sequence:
+            //   1. Load the kernel GDT (adds DPL=3 segments + TSS).
+            //   2. Initialise the TSS (RSP0 = current kernel stack top).
+            //   3. Set KernelGsBase MSR to CpuLocal (for SWAPGS in syscall stub).
+            //   4. Write SYSCALL MSRs (STAR / LSTAR / SFMASK).
+            //   5. Map one 4 KiB code page and one 4 KiB stack page in the kernel
+            //      frame allocator's address space.
+            //   6. Copy a tiny machine-code stub into the code page.
+            //   7. Jump to ring-3 via IRETQ.
+            //   8. Stub executes SYSCALL → kernel prints [PASS] string.
+            //   9. SYSRET returns to ring-3 → stub executes HLT loop (kernel
+            //      halts normally after).
+            //
+            // Expected serial output:
+            //   "Kernel/user mode transition smoke test (Phase 2.1.4)"
+            //   "[OK] 17.1) GDT + TSS loaded (DPL=3 segments active)"
+            //   "[OK] 17.2) SYSCALL MSRs initialised"
+            //   "[OK] 17.3) User code + stack pages mapped"
+            //   "[PASS] Syscall received from Ring 3!"
+            //   "[OK] Kernel/user mode transition smoke test complete"
+            // ---------------------------------------------------------------
+            serial_write_str("\r\n[...] Kernel/user mode transition smoke test (Phase 2.1.4)\r\n");
+            unsafe {
+                kernel_user_mode_smoke_test();
+            }
         }
         Err(_) => {
             serial_write_str("[SKIP] Address space smoke test: memory map parse failed\r\n");
@@ -1810,6 +1842,128 @@ fn kernel_main(boot_info: &KernelBootInfo) -> ! {
 // serial_write_usize_hex) are now provided by boot/src/serial.rs and
 // re-exported at the crate root by `pub use serial::{...}` above.
 // See boot/src/serial.rs for the BootSerialPort implementation (Phase 1.4.4).
+
+// ---------------------------------------------------------------------------
+// Phase 2.1.4 — Kernel / User Mode Transition Smoke Test
+// ---------------------------------------------------------------------------
+
+/// Run the Phase 2.1.4 kernel/user mode transition smoke test.
+///
+/// Requires:
+/// - Frame allocator already initialised (Step 15 in `kernel_main`).
+/// - Identity mapping (VA == PA) in effect.
+/// - `reserve_bootstrap_page_table_frames()` already called.
+///
+/// # Safety
+///
+/// Single-threaded, CPL = 0, interrupts disabled.
+unsafe fn kernel_user_mode_smoke_test() {
+    use ferrous_kernel::arch::x86_64;
+    use ferrous_kernel::memory::{address_space, frame_allocator};
+
+    // Step 17.1 — Load the kernel GDT (adds DPL=3 segments and a TSS descriptor).
+    x86_64::gdt::init();
+
+    // Point TSS.RSP0 at the current kernel stack so that hardware will restore
+    // it on privilege changes triggered by exceptions in ring-3.
+    // We capture RSP here (still a valid kernel stack pointer).
+    let kernel_rsp: u64;
+    core::arch::asm!("mov {}, rsp", out(reg) kernel_rsp, options(nomem, nostack));
+    #[allow(static_mut_refs)]
+    {
+        x86_64::gdt::TSS.rsp0 = kernel_rsp;
+    }
+    serial_write_str("[OK] 17.1) GDT + TSS loaded (DPL=3 segments active)\r\n");
+
+    // Step 17.2 — Initialise CPU-local GS base and SYSCALL/SYSRET MSRs.
+    x86_64::cpu::init();
+    // Set the kernel stack pointer in CpuLocal so the SYSCALL entry stub can
+    // switch to it via `mov rsp, gs:[0]`.
+    #[allow(static_mut_refs)]
+    {
+        x86_64::cpu::CPU_LOCAL.kernel_stack = kernel_rsp;
+    }
+    x86_64::syscall::init();
+    serial_write_str("[OK] 17.2) SYSCALL MSRs initialised\r\n");
+
+    // Step 17.3 — Map one user code page and one user stack page.
+    //
+    // User virtual addresses (arbitrary, below the canonical hole):
+    const USER_CODE_VA: u64 = 0x0000_1000_0000_0000;
+    const USER_STACK_VA: u64 = 0x0000_2000_0000_0000;
+    const PAGE_SIZE: usize = 4096;
+
+    use address_space::{RegionKind, VirtualRegion};
+    use ferrous_kernel::memory::paging::VirtualAddress;
+
+    // Create a fresh address space for the user task.
+    let mut aspace = address_space::AddressSpace::new()
+        .expect("AddressSpace::new failed in Phase 2.1.4 smoke test");
+
+    // Map the code region (read-execute for user).
+    let code_region = VirtualRegion {
+        base: VirtualAddress::try_new(USER_CODE_VA).unwrap(),
+        size: PAGE_SIZE,
+        kind: RegionKind::Code,
+    };
+    aspace
+        .map_region(code_region)
+        .expect("failed to map user code page");
+
+    // Map the stack region (read-write for user).
+    let stack_region = VirtualRegion {
+        base: VirtualAddress::try_new(USER_STACK_VA).unwrap(),
+        size: PAGE_SIZE,
+        kind: RegionKind::Stack,
+    };
+    aspace
+        .map_region(stack_region)
+        .expect("failed to map user stack page");
+    serial_write_str("[OK] 17.3) User code + stack pages mapped\r\n");
+
+    // Step 17.4 — Copy the user-mode stub into the code page.
+    //
+    // The stub (x86-64 machine code):
+    //   syscall       ; 0F 05 — enters ring 0 via SYSCALL
+    //   hlt           ; F4   — halts the CPU when returned to ring 3 via SYSRET
+    //   jmp $ - 1     ; EB FE — infinite loop in case HLT is resumed by an interrupt
+    //
+    // (In practice QEMU never delivers an external interrupt here because we
+    //  clear IF in the SFMASK; this JMP is just a safety net.)
+    const USER_STUB: &[u8] = &[
+        0x0F, 0x05, // syscall
+        0xF4, // hlt
+        0xEB, 0xFE, // jmp -2 (loop forever)
+    ];
+    // Translate the user VA to get the physical address (= identity-map VA).
+    let code_pa = aspace
+        .translate(VirtualAddress::try_new(USER_CODE_VA).unwrap())
+        .expect("code page must be mapped");
+    let code_ptr = code_pa as *mut u8;
+    core::ptr::copy_nonoverlapping(USER_STUB.as_ptr(), code_ptr, USER_STUB.len());
+
+    // Copy the bootloader's lower-half identity mapping into the new address space.
+    // The bootloader executes from the lower half (< 1 GiB), which is covered by
+    // PML4 entry 0. If we don't copy this, switching CR3 will immediately page fault
+    // on the next instruction fetch.
+    let cr3: u64;
+    core::arch::asm!("mov {cr3}, cr3", cr3 = out(reg) cr3, options(nomem, nostack));
+    let boot_pml4 = &*((cr3 & !0xFFF) as *const ferrous_kernel::memory::paging::PageTable);
+    let new_pml4 = &mut *(aspace.pml4_phys() as *mut ferrous_kernel::memory::paging::PageTable);
+    *new_pml4.entry_mut(0) = *boot_pml4.entry(0);
+
+    // Switch to the new address space.
+    aspace.switch_to();
+
+    // Step 17.5 — Jump to ring 3 via IRETQ.
+    //
+    // User RSP points just past the top of the stack page (stack grows down).
+    let user_rsp = USER_STACK_VA + PAGE_SIZE as u64;
+    x86_64::syscall::jump_to_user_mode(USER_CODE_VA, user_rsp);
+    // jump_to_user_mode() is `-> !` so we never reach here.
+    // The SYSCALL handler (syscall_dispatcher) will print [PASS] and SYSRET.
+    // After SYSRET the user stub executes HLT → QEMU halts the vCPU.
+}
 
 // ---------------------------------------------------------------------------
 // Page-table frame reservation helper
@@ -1853,8 +2007,13 @@ unsafe fn reserve_bootstrap_page_table_frames() {
     );
     let pml4_phys = cr3 & !0xFFF;
 
+    serial_write_str("[INFO] Reserving bootstrap PT frames...\r\n");
+
     // Reserve the PML4 frame itself.
     ferrous_kernel::memory::frame_allocator::mark_reserved(pml4_phys, PAGE_SIZE);
+    serial_write_str("  PML4: 0x");
+    serial_write_usize_hex(pml4_phys as usize);
+    serial_write_str("\r\n");
 
     // Walk PML4 → PDPT → PD → PT.
     let pml4 = pml4_phys as *const u64;
@@ -1863,13 +2022,15 @@ unsafe fn reserve_bootstrap_page_table_frames() {
         if pml4e & PRESENT == 0 {
             continue;
         }
-        // 1 GiB huge pages have no PDPT frame — skip.
         if pml4e & HUGE != 0 {
             continue;
         }
 
         let pdpt_phys = pml4e & PHYS_MASK;
         ferrous_kernel::memory::frame_allocator::mark_reserved(pdpt_phys, PAGE_SIZE);
+        serial_write_str("  PDPT: 0x");
+        serial_write_usize_hex(pdpt_phys as usize);
+        serial_write_str("\r\n");
 
         let pdpt = pdpt_phys as *const u64;
         for j in 0..TABLE_ENTRIES {
@@ -1883,6 +2044,9 @@ unsafe fn reserve_bootstrap_page_table_frames() {
 
             let pd_phys = pdpte & PHYS_MASK;
             ferrous_kernel::memory::frame_allocator::mark_reserved(pd_phys, PAGE_SIZE);
+            serial_write_str("  PD:   0x");
+            serial_write_usize_hex(pd_phys as usize);
+            serial_write_str("\r\n");
 
             let pd = pd_phys as *const u64;
             for k in 0..TABLE_ENTRIES {
@@ -1897,6 +2061,9 @@ unsafe fn reserve_bootstrap_page_table_frames() {
                 // Non-huge PD entry → a PT frame.
                 let pt_phys = pde & PHYS_MASK;
                 ferrous_kernel::memory::frame_allocator::mark_reserved(pt_phys, PAGE_SIZE);
+                serial_write_str("  PT:   0x");
+                serial_write_usize_hex(pt_phys as usize);
+                serial_write_str("\r\n");
             }
         }
     }
