@@ -219,6 +219,25 @@ EXPECTED_STRINGS=(
     "serial_console: fmt::Write verified"
     "serial_console: rx interface verified"
     "Serial console driver smoke test complete"
+
+    # Phase 2.1.1 — task/process data structures
+    "Task/process data structure smoke test (Phase 2.1.1)"
+    "Task/process data structure smoke test complete"
+
+    # Phase 2.1.2 — address space
+    "Address space smoke test (Phase 2.1.2)"
+    "Address space smoke test complete"
+
+    # Phase 2.1.3 — ELF loader
+    "ELF loader smoke test (Phase 2.1.3)"
+    "ELF loader smoke test complete"
+
+    # Phase 2.1.4 — Kernel / User Mode Transition
+    "Kernel/user mode transition smoke test (Phase 2.1.4)"
+    "[OK] 17.1) GDT + TSS loaded (DPL=3 segments active)"
+    "[OK] 17.2) SYSCALL MSRs initialised"
+    "[OK] 17.3) User code + stack pages mapped"
+    "[PASS] Syscall received from Ring 3!"
 )
 
 run_and_verify() {
