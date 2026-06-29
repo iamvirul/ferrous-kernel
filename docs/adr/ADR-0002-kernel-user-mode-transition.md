@@ -1,6 +1,6 @@
 # ADR-0002: Kernel and User Mode Transition Mechanism
 
-**Status:** Proposed  
+**Status:** Accepted  
 **Date:** 2026-05-27  
 **Deciders:** iamvirul  
 **Tags:** phase-2, user-mode, syscall, security, performance
@@ -141,12 +141,12 @@ The mechanism must balance performance for frequent transitions (like system cal
 
 ## Implementation Plan
 
-- [ ] Update the GDT to include Ring 3 Code (`0x18`) and Ring 3 Data (`0x20`) segments.
-- [ ] Implement a TSS and configure the GDT to load it using the `LTR` instruction.
-- [ ] Update the Page Table allocator to allow setting the `USER` bit for specific mappings.
-- [ ] Initialize the `STAR`, `LSTAR`, and `FMASK` MSRs for the `SYSCALL` instruction.
-- [ ] Write the `SYSCALL` entry assembly stub to safely save user state, perform `SWAPGS`, switch to the kernel stack, and call a Rust handler.
-- [ ] Write the `SYSRET` and `IRETQ` exit paths to restore user state and return to Ring 3.
+- [x] Update the GDT to include Ring 3 Code/Data segments and TSS descriptor (`kernel/src/arch/x86_64/gdt.rs`).
+- [x] Implement a TSS and configure the GDT to load it using the `LTR` instruction (`kernel/src/arch/x86_64/tss.rs`).
+- [x] Update the Page Table allocator to allow setting the `USER` bit for specific mappings (`kernel/src/memory/address_space.rs`).
+- [x] Initialize the `STAR`, `LSTAR`, and `FMASK` MSRs for the `SYSCALL` instruction (`kernel/src/arch/x86_64/syscall.rs`).
+- [x] Write the `SYSCALL` entry assembly stub to safely save user state, perform `SWAPGS`, switch to the kernel stack, and call a Rust handler (`kernel/src/arch/x86_64/syscall.rs`).
+- [x] Write the `SYSRET` and `IRETQ` exit paths to restore user state and return to Ring 3 (`kernel/src/arch/x86_64/syscall.rs`).
 
 ---
 
@@ -169,6 +169,7 @@ The mechanism must balance performance for frequent transitions (like system cal
 ## Status History
 
 - 2026-05-27: Created (Status: Proposed)
+- 2026-06-29: Accepted — implementation complete in `kernel/src/arch/x86_64/{gdt,tss,cpu,syscall}.rs`; smoke test enabled in `boot/src/main.rs` Step 17 (closes #68)
 
 ---
 
