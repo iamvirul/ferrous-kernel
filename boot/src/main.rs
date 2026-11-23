@@ -1811,23 +1811,25 @@ extern "sysv64" fn kernel_main(boot_info: &'static KernelBootInfo) -> ! {
             //   4. Write SYSCALL MSRs (STAR / LSTAR / SFMASK).
             //   5. Map one 4 KiB code page and one 4 KiB stack page in the kernel
             //      frame allocator's address space.
-            //   6. Copy a tiny machine-code stub into the code page.
+            //   6. Copy the ring-3 syscall test program into the code page
+            //      (Phase 2.1.5, Step 18).
             //   7. Jump to ring-3 via IRETQ.
-            //   8. Stub executes SYSCALL 1 → kernel prints the first [PASS].
-            //   9. SYSRET returns to ring-3 → stub executes SYSCALL 2, which
-            //      proves user code resumed → kernel prints the second [PASS].
-            //  10. Second SYSRET → stub stays in ring 3 in a `pause` loop.
-            //      This is the successful end state: control never returns
-            //      to the boot path, and the verify harness's timeout stops
-            //      QEMU. A timeout here is expected, not a failed boot.
+            //   8. The program issues every syscall and error case through
+            //      SYSCALL/SYSRET, checking each RAX result in ring 3.
+            //   9. It calls sys_exit(0) only if every check passed (otherwise
+            //      sys_exit(N) names the failing check). The kernel logs the
+            //      code and halts; control never returns to the boot path.
             //
             // Expected serial output:
             //   "Kernel/user mode transition smoke test (Phase 2.1.4)"
             //   "[OK] 17.1) GDT + TSS loaded (DPL=3 segments active)"
             //   "[OK] 17.2) SYSCALL MSRs initialised"
             //   "[OK] 17.3) User code + stack pages mapped"
-            //   "[PASS] Syscall received from Ring 3!"
-            //   "[PASS] Ring 3 resumed after SYSRET"
+            //   "System call interface smoke test (Phase 2.1.5)"
+            //   "[OK] 18.1) Ring-3 syscall test program loaded (N bytes)"
+            //   "user: hello from ring 3"                    (debug kernels)
+            //   "user: all syscall checks passed"            (debug kernels)
+            //   "sys_exit: process exited with code 0"
             // ---------------------------------------------------------------
             serial_write_str("\r\n[...] Kernel/user mode transition smoke test (Phase 2.1.4)\r\n");
             unsafe {
@@ -1850,6 +1852,182 @@ extern "sysv64" fn kernel_main(boot_info: &'static KernelBootInfo) -> ! {
 // serial_write_usize_hex) are now provided by boot/src/serial.rs and
 // re-exported at the crate root by `pub use serial::{...}` above.
 // See boot/src/serial.rs for the BootSerialPort implementation (Phase 1.4.4).
+
+// ---------------------------------------------------------------------------
+// Phase 2.1.5 — Ring-3 syscall test program
+// ---------------------------------------------------------------------------
+
+/// Virtual address of the user code page (below the canonical hole).
+const USER_CODE_VA: u64 = 0x0000_1000_0000_0000;
+/// Virtual address of the user stack page.
+const USER_STACK_VA: u64 = 0x0000_2000_0000_0000;
+/// Size of each user page mapped by the smoke test.
+const USER_PAGE_SIZE: u64 = 4096;
+/// A user-half address the smoke test never maps.
+const USER_UNMAPPED_VA: u64 = 0x0000_3000_0000_0000;
+/// Inside the `[0, 1 GiB)` identity map: present, but supervisor-only.
+const KERNEL_IDENTITY_VA: u64 = 0x0010_0000;
+/// Start of the kernel higher half.
+const KERNEL_HIGH_VA: u64 = 0xFFFF_8000_0000_0000;
+/// A syscall number that is not assigned.
+const UNASSIGNED_SYSCALL: u64 = 0xFFFF;
+
+extern "C" {
+    /// First byte of the ring-3 test program (defined in global_asm! below).
+    static __user_smoke_start: u8;
+    /// One past the last byte of the ring-3 test program.
+    static __user_smoke_end: u8;
+}
+
+// The ring-3 syscall test program, copied byte-for-byte to USER_CODE_VA.
+//
+// Each check issues one syscall and compares RAX with the expected result.
+// On a mismatch it jumps to `80:` with EDI = the check number, so the
+// kernel's "sys_exit: process exited with code N" names the failed check.
+// Only if every check passes does it log success and call sys_exit(0).
+//
+// Lengths use `.set` + `offset`: in Intel syntax a bare symbol operand is a
+// *memory load*, so `mov esi, LEN` would read address LEN.
+global_asm!(
+    ".pushsection .text",
+    ".global __user_smoke_start",
+    ".global __user_smoke_end",
+    ".set __USER_SMOKE_HELLO_LEN, __user_smoke_hello_end - __user_smoke_hello",
+    ".set __USER_SMOKE_DONE_LEN, __user_smoke_done_end - __user_smoke_done",
+    "__user_smoke_start:",
+    // 1. sys_log with valid UTF-8 → 0
+    "mov eax, {log}",
+    "lea rdi, [rip + __user_smoke_hello]",
+    "mov esi, offset __USER_SMOKE_HELLO_LEN",
+    "syscall",
+    "test rax, rax",
+    "mov edi, 1",
+    "jnz 80f",
+    // 2. sys_yield → 0
+    "mov eax, {yield_}",
+    "syscall",
+    "test rax, rax",
+    "mov edi, 2",
+    "jnz 80f",
+    // 3. unassigned number → -ENOSYS
+    "mov eax, {unassigned}",
+    "syscall",
+    "cmp rax, {enosys}",
+    "mov edi, 3",
+    "jne 80f",
+    // 4. reserved number 0 → -ENOSYS
+    "xor eax, eax",
+    "syscall",
+    "cmp rax, {enosys}",
+    "mov edi, 4",
+    "jne 80f",
+    // 5. identity-map pointer (present, supervisor-only) → -EFAULT
+    "mov eax, {log}",
+    "mov rdi, {kernel_identity}",
+    "mov esi, 8",
+    "syscall",
+    "cmp rax, {efault}",
+    "mov edi, 5",
+    "jne 80f",
+    // 6. kernel higher-half pointer → -EFAULT
+    "mov eax, {log}",
+    "mov rdi, {kernel_high}",
+    "mov esi, 8",
+    "syscall",
+    "cmp rax, {efault}",
+    "mov edi, 6",
+    "jne 80f",
+    // 7. ptr + len overflows u64 → -EFAULT
+    "mov eax, {log}",
+    "mov rdi, -1",
+    "mov esi, 2",
+    "syscall",
+    "cmp rax, {efault}",
+    "mov edi, 7",
+    "jne 80f",
+    // 8. unmapped user page → -EFAULT (no kernel page fault)
+    "mov eax, {log}",
+    "mov rdi, {unmapped}",
+    "mov esi, 8",
+    "syscall",
+    "cmp rax, {efault}",
+    "mov edi, 8",
+    "jne 80f",
+    // 9. range starting in the mapped code page and ending in the next,
+    //    unmapped page → -EFAULT (every page is walked, not just the first)
+    "mov eax, {log}",
+    "mov rdi, {code_page_tail}",
+    "mov esi, 8",
+    "syscall",
+    "cmp rax, {efault}",
+    "mov edi, 9",
+    "jne 80f",
+    // 10. len > LOG_MAX_LEN → -EINVAL
+    "mov eax, {log}",
+    "lea rdi, [rip + __user_smoke_hello]",
+    "mov esi, {too_long}",
+    "syscall",
+    "cmp rax, {einval}",
+    "mov edi, 10",
+    "jne 80f",
+    // 11. invalid UTF-8 → -EINVAL
+    "mov eax, {log}",
+    "lea rdi, [rip + __user_smoke_bad_utf8]",
+    "mov esi, 2",
+    "syscall",
+    "cmp rax, {einval}",
+    "mov edi, 11",
+    "jne 80f",
+    // 12. null pointer with non-zero length → -EFAULT
+    "mov eax, {log}",
+    "xor edi, edi",
+    "mov esi, 1",
+    "syscall",
+    "cmp rax, {efault}",
+    "mov edi, 12",
+    "jne 80f",
+    // 13. zero-length log (null pointer allowed, never dereferenced) → 0
+    "mov eax, {log}",
+    "xor edi, edi",
+    "xor esi, esi",
+    "syscall",
+    "test rax, rax",
+    "mov edi, 13",
+    "jnz 80f",
+    // All checks passed: log success and exit with code 0.
+    "mov eax, {log}",
+    "lea rdi, [rip + __user_smoke_done]",
+    "mov esi, offset __USER_SMOKE_DONE_LEN",
+    "syscall",
+    "xor edi, edi",
+    "80:",
+    "mov eax, {exit}",
+    "syscall",
+    // sys_exit never returns; trap if it ever does.
+    "ud2",
+    "__user_smoke_hello:",
+    ".ascii \"hello from ring 3\"",
+    "__user_smoke_hello_end:",
+    "__user_smoke_bad_utf8:",
+    ".byte 0xC3, 0x28",
+    "__user_smoke_done:",
+    ".ascii \"all syscall checks passed\"",
+    "__user_smoke_done_end:",
+    "__user_smoke_end:",
+    ".popsection",
+    exit = const ferrous_syscall::SyscallNumber::Exit as u64,
+    yield_ = const ferrous_syscall::SyscallNumber::Yield as u64,
+    log = const ferrous_syscall::SyscallNumber::Log as u64,
+    unassigned = const UNASSIGNED_SYSCALL,
+    enosys = const -(ferrous_syscall::SyscallError::NoSys as i64),
+    efault = const -(ferrous_syscall::SyscallError::Fault as i64),
+    einval = const -(ferrous_syscall::SyscallError::Invalid as i64),
+    kernel_identity = const KERNEL_IDENTITY_VA,
+    kernel_high = const KERNEL_HIGH_VA as i64,
+    unmapped = const USER_UNMAPPED_VA,
+    code_page_tail = const USER_CODE_VA + USER_PAGE_SIZE - 4,
+    too_long = const ferrous_syscall::LOG_MAX_LEN + 1,
+);
 
 // ---------------------------------------------------------------------------
 // Phase 2.1.4 — Kernel / User Mode Transition Smoke Test
@@ -1914,10 +2092,9 @@ unsafe fn kernel_user_mode_smoke_test() {
 
     // Step 17.3 — Map one user code page and one user stack page.
     //
-    // User virtual addresses (arbitrary, below the canonical hole):
-    const USER_CODE_VA: u64 = 0x0000_1000_0000_0000;
-    const USER_STACK_VA: u64 = 0x0000_2000_0000_0000;
-    const PAGE_SIZE: usize = 4096;
+    // User virtual addresses: see USER_CODE_VA / USER_STACK_VA (module level,
+    // shared with the ring-3 test program).
+    const PAGE_SIZE: usize = USER_PAGE_SIZE as usize;
 
     use address_space::{RegionKind, VirtualRegion};
     use ferrous_kernel::memory::paging::VirtualAddress;
@@ -1947,35 +2124,27 @@ unsafe fn kernel_user_mode_smoke_test() {
         .expect("failed to map user stack page");
     serial_write_str("[OK] 17.3) User code + stack pages mapped\r\n");
 
-    // Step 17.4 — Copy the user-mode stub into the code page.
+    // Step 18.1 — Copy the ring-3 syscall test program into the code page.
     //
-    // The stub (x86-64 machine code):
-    //   mov eax, 1    ; B8 01 00 00 00 — SMOKE_SYSCALL_ENTER (zero-extends RAX)
-    //   syscall       ; 0F 05          — enters ring 0 via SYSCALL
-    //   mov eax, 2    ; B8 02 00 00 00 — SMOKE_SYSCALL_AFTER_SYSRET
-    //   syscall       ; 0F 05          — only reached if SYSRET resumed us
-    //   pause         ; F3 90          — spin-loop hint, stays in ring 3
-    //   jmp $ - 2     ; EB FC          — back to `pause`, forever
-    //
-    // HLT cannot be used here: it is privileged, so executing it at CPL=3
-    // raises #GP immediately after a successful round trip. The verify
-    // script's timeout ends the run.
-    const _: () = assert!(x86_64::syscall::SMOKE_SYSCALL_ENTER == 1);
-    const _: () = assert!(x86_64::syscall::SMOKE_SYSCALL_AFTER_SYSRET == 2);
-    const USER_STUB: &[u8] = &[
-        0xB8, 0x01, 0x00, 0x00, 0x00, // mov eax, 1
-        0x0F, 0x05, // syscall
-        0xB8, 0x02, 0x00, 0x00, 0x00, // mov eax, 2
-        0x0F, 0x05, // syscall
-        0xF3, 0x90, // pause
-        0xEB, 0xFC, // jmp -4 (back to pause)
-    ];
+    // The program (`__user_smoke_start`..`__user_smoke_end`, assembled from
+    // the global_asm! below) is position-independent: it addresses its own
+    // strings RIP-relatively, so it runs unchanged at USER_CODE_VA.
+    let program_start = core::ptr::addr_of!(__user_smoke_start);
+    let program_len = core::ptr::addr_of!(__user_smoke_end) as usize - program_start as usize;
+    assert!(
+        program_len <= PAGE_SIZE,
+        "ring-3 test program ({program_len} bytes) exceeds its one code page"
+    );
     // Translate the user VA to get the physical address (= identity-map VA).
     let code_pa = aspace
         .translate(VirtualAddress::try_new(USER_CODE_VA).unwrap())
         .expect("code page must be mapped");
     let code_ptr = code_pa as *mut u8;
-    core::ptr::copy_nonoverlapping(USER_STUB.as_ptr(), code_ptr, USER_STUB.len());
+    core::ptr::copy_nonoverlapping(program_start, code_ptr, program_len);
+    serial_write_str("\r\n[...] System call interface smoke test (Phase 2.1.5)\r\n");
+    serial_write_str("[OK] 18.1) Ring-3 syscall test program loaded (");
+    serial_write_usize(program_len);
+    serial_write_str(" bytes)\r\n");
 
     // Copy the bootloader's lower-half identity mapping into the new address space.
     // The bootloader executes from the lower half (< 1 GiB), which is covered by
@@ -1996,8 +2165,9 @@ unsafe fn kernel_user_mode_smoke_test() {
     let user_rsp = USER_STACK_VA + PAGE_SIZE as u64;
     x86_64::syscall::jump_to_user_mode(USER_CODE_VA, user_rsp);
     // jump_to_user_mode() is `-> !` so we never reach here.
-    // syscall_dispatcher prints a [PASS] line for each of the stub's two
-    // syscalls; after the second SYSRET the stub spins in ring 3 forever.
+    // The program exercises every syscall and error path, then calls
+    // sys_exit(0) only if each result matched; the kernel logs the exit code
+    // and halts (no scheduler yet).
 }
 
 // ---------------------------------------------------------------------------
