@@ -58,3 +58,15 @@ pub unsafe fn init() {
         options(nostack, preserves_flags),
     );
 }
+
+/// Disable interrupts and halt this CPU permanently.
+///
+/// Used when there is nothing left to run (e.g. `sys_exit` before the
+/// scheduler exists). `hlt` is in a loop because NMIs can still wake it.
+pub fn halt_forever() -> ! {
+    loop {
+        // SAFETY: `cli; hlt` at CPL 0 only stops this CPU. It touches no
+        // memory and breaks no invariant of the surrounding code.
+        unsafe { core::arch::asm!("cli", "hlt", options(nomem, nostack)) };
+    }
+}
