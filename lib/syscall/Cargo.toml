@@ -1,0 +1,19 @@
+[package]
+name = "ferrous-syscall"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "System call ABI shared by the Ferrous kernel and user space (ADR-0007)"
+
+[lib]
+name = "ferrous_syscall"
+
+[dependencies]
+# Pure no_std ABI definitions: no dependencies by design.
+
+[lints.rust]
+# Pure ABI definitions: no unsafe code, ever.
+unsafe_code = "forbid"
+warnings = "warn"
