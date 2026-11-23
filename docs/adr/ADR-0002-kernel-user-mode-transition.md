@@ -169,7 +169,8 @@ The mechanism must balance performance for frequent transitions (like system cal
 ## Status History
 
 - 2026-05-27: Created (Status: Proposed)
-- 2026-06-29: Accepted — implementation complete in `kernel/src/arch/x86_64/{gdt,tss,cpu,syscall}.rs`; smoke test enabled in `boot/src/main.rs` Step 17 (closes #68)
+- 2026-06-29: Accepted — BSP syscall path implemented in `kernel/src/arch/x86_64/{gdt,tss,cpu,syscall}.rs`; smoke test enabled in `boot/src/main.rs` Step 17 (closes #68)
+- 2026-11-23: Validated in QEMU — IRETQ first entry, SYSCALL, and SYSRET back to ring 3 (two round trips). Scope of "complete" is the BSP syscall smoke path only. **Not yet implemented:** IRETQ return from interrupt/exception handlers (the boot exception handler reports and halts), and per-task `RSP0` (TSS RSP0 is the boot kernel stack until context switching lands in Phase 2.2). NMIs are delivered on a dedicated IST stack.
 
 ---
 
