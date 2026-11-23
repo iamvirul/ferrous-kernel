@@ -323,6 +323,9 @@ mod tests {
         );
     }
 
+    // The guard is a `debug_assert!`, so it only exists with debug assertions
+    // on; `cargo test --release` must not expect it.
+    #[cfg(debug_assertions)]
     #[test]
     #[should_panic(expected = "collides with the error range")]
     fn success_in_error_range_panics_in_debug() {
