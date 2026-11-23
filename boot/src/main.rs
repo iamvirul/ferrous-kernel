@@ -52,7 +52,8 @@ use ferrous_boot_info::{BitmapFrameAllocator, KernelBootInfo, KERNEL_BITMAP_WORD
 ///
 /// This stack is used only during the UEFI handoff sequence
 /// (exit_boot_services → kernel_entry). It is intentionally small —
-/// `kernel_main` immediately switches to the larger KERNEL_STACK.
+/// `kernel_entry` switches to the larger KERNEL_STACK before calling
+/// `kernel_main`.
 const BOOTSTRAP_STACK_SIZE: usize = 16 * 1024;
 
 /// Bootstrap stack used after `exit_boot_services()`.
@@ -89,12 +90,12 @@ const KERNEL_STACK_GUARD_SIZE: usize = 4 * 1024;
 
 /// The kernel's primary execution stack.
 ///
-/// `kernel_main` switches RSP to the top of this buffer immediately on entry,
-/// leaving the bootstrap stack behind. The stack is 16-byte aligned and large
+/// `kernel_entry` switches RSP to the top of this buffer and then calls
+/// `kernel_main`, leaving the bootstrap stack behind. The stack is 16-byte aligned and large
 /// enough for typical kernel call chains in Phase 1 (no deep recursion, no
 /// interrupt frames yet).
 ///
-/// SAFETY: switched to exactly once from `kernel_main` before any other
+/// SAFETY: switched to exactly once from `kernel_entry` before any other
 /// stack writes occur. Single-core, interrupts-disabled environment.
 #[repr(C, align(4096))]
 struct KernelStack([u8; KERNEL_STACK_SIZE]);
@@ -848,8 +849,12 @@ fn efi_main() -> Status {
 /// - RDI must contain the address of a fully populated `KernelBootInfo`.
 /// - Interrupts must be disabled (`cli` must have been executed).
 /// - UEFI boot services must have already exited.
+///
+/// The ABI is pinned to `sysv64` because the handoff asm passes the argument
+/// in RDI. On `x86_64-unknown-uefi`, `extern "C"` is the Win64 ABI (first
+/// argument in RCX), which would silently read the wrong register.
 #[no_mangle]
-extern "C" fn kernel_entry(boot_info: *const KernelBootInfo) -> ! {
+extern "sysv64" fn kernel_entry(boot_info: *const KernelBootInfo) -> ! {
     // Validate the boot info pointer before touching anything else.
     //
     // SAFETY: `boot_info` is the address of KERNEL_BOOT_INFO, a valid
@@ -874,70 +879,54 @@ extern "C" fn kernel_entry(boot_info: *const KernelBootInfo) -> ! {
     // When the kernel becomes a separate flat binary, zero_bss() will be
     // performed at the start of kernel_entry in kernel/src/arch/x86_64/entry.rs.
 
-    kernel_main(info);
+    // --- Switch to the kernel primary stack and call kernel_main ---
+    //
+    // The switch MUST happen before kernel_main's prologue runs. Switching
+    // RSP from inside kernel_main (after `sub rsp, <frame>`) leaves its
+    // entire frame — ~34 KiB in debug builds — addressed above the new stack
+    // top, overlapping the statics that follow KERNEL_STACK (IDT, kernel
+    // page tables). That corruption surfaced as a triple fault in the
+    // Phase 2.1.2 smoke test once the frame grew large enough to reach the
+    // PD entry covering the kernel image.
+    //
+    // SAFETY:
+    // - KERNEL_STACK is a valid 64 KiB, 4096-byte-aligned static buffer;
+    //   `stack_top` is one past its end, the correct initial RSP for a
+    //   downward-growing stack, and is 16-byte aligned so RSP+8 is aligned
+    //   at kernel_main's entry as the SysV ABI requires.
+    // - `info` points to KERNEL_BOOT_INFO (validated above), a static that
+    //   lives for the kernel's lifetime; it is passed in RDI per sysv64,
+    //   matching kernel_main's declared ABI.
+    // - kernel_main is `-> !`; the pushed return address is never consumed,
+    //   so abandoning the bootstrap stack is sound.
+    // - Interrupts are disabled (cli in efi_main); nothing can observe RSP
+    //   mid-switch.
+    unsafe {
+        let stack_top = (core::ptr::addr_of!(KERNEL_STACK) as usize + KERNEL_STACK_SIZE) as u64;
+        core::arch::asm!(
+            "mov rsp, {stack}",
+            "xor rbp, rbp",
+            "call {main}",
+            stack = in(reg) stack_top,
+            in("rdi") info as *const KernelBootInfo,
+            main = sym kernel_main,
+            options(noreturn),
+        );
+    }
 }
 
 /// First Rust function executing in the kernel context.
 ///
-/// On entry RSP points to the bootstrap stack (set up by the bootloader).
-/// The very first action is to switch to the kernel's own primary stack
-/// (`KERNEL_STACK`, 64 KiB) so we have adequate depth for kernel execution.
+/// Entered from `kernel_entry` with RSP already at the top of the kernel's
+/// primary stack (`KERNEL_STACK`, 64 KiB), so this function's frame lives
+/// entirely inside that buffer.
 ///
 /// At this point:
 /// - Boot services have exited.
-/// - We are on the bootstrap stack with interrupts disabled.
+/// - Interrupts are disabled.
 /// - `boot_info` is a reference into the `KERNEL_BOOT_INFO` static — valid
 ///   for the lifetime of the kernel.
-fn kernel_main(boot_info: &KernelBootInfo) -> ! {
-    // -----------------------------------------------------------------------
-    // Step 1: Switch to the kernel primary stack.
-    //
-    // We leave the bootstrap stack behind. From this point forward RSP
-    // points into KERNEL_STACK.
-    //
-    // Implementation note — register spilling:
-    //
-    // After `mov rsp`, the compiler's RSP-relative loads for any locals
-    // computed before the switch would read from the zeroed kernel stack
-    // rather than the bootstrap stack, producing garbage values. We avoid
-    // this by using an `inlateout` constraint to keep `boot_info` in a
-    // physical register throughout the switch; the register is not modified
-    // by the asm, so `info_out == info_in` after. Stack bounds are computed
-    // fresh from the static address AFTER the switch — accessed by absolute
-    // address, never RSP-relative.
-    //
-    // SAFETY:
-    // - KERNEL_STACK is a valid 64 KiB, 16-byte-aligned static buffer.
-    // - stack_top is one past the end of the array — the correct initial RSP
-    //   for a downward-growing x86-64 stack.
-    // - boot_info points to KERNEL_BOOT_INFO, a valid static that outlives
-    //   the kernel. Reconstructing the reference after the switch is safe.
-    // - kernel_main is `-> !`; the return address on the bootstrap stack is
-    //   never consumed.
-    // - Interrupts are disabled; no context switch can race this.
-    // Switch RSP to the kernel stack. After this instruction the bootstrap
-    // stack is abandoned. We must not read any local variables that the
-    // compiler might have spilled to the old stack after this point.
-    //
-    // Solution: use only static-address loads after the switch.
-    // - KERNEL_STACK and KERNEL_BOOT_INFO are statics; their addresses are
-    //   embedded as absolute values in the code, never RSP-relative.
-    // - We ignore the `boot_info` parameter and re-derive it from
-    //   KERNEL_BOOT_INFO directly after the switch.
-    unsafe {
-        let stack_top = (core::ptr::addr_of!(KERNEL_STACK) as usize + KERNEL_STACK_SIZE) as u64;
-        core::arch::asm!(
-            "mov rsp, {top}",
-            top = in(reg) stack_top,
-            options(nomem, nostack, preserves_flags),
-        );
-    }
-
-    // Re-derive boot_info from the static — absolute address, never spilled.
-    // SAFETY: KERNEL_BOOT_INFO is fully populated before exit_boot_services()
-    // and is immutable from this point forward.
-    let boot_info = unsafe { &*core::ptr::addr_of!(KERNEL_BOOT_INFO) };
-
+extern "sysv64" fn kernel_main(boot_info: &'static KernelBootInfo) -> ! {
     // Stack bounds computed from static address, not RSP-relative.
     let stack_bottom = unsafe { core::ptr::addr_of!(KERNEL_STACK) as usize };
     let stack_top = stack_bottom + KERNEL_STACK_SIZE;
