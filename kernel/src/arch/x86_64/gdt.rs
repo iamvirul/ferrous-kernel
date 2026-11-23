@@ -1,146 +1,113 @@
 //! Global Descriptor Table (GDT) for x86-64.
 //!
-//! Even though x86-64 long mode largely ignores segmentation (base/limit are
-//! zero-extended and effectively unused), the GDT must still be loaded before
-//! the CPU can operate correctly:
+//! Even though x86-64 long mode largely ignores segmentation, the GDT must
+//! still be loaded before the CPU can operate correctly, and it is strictly
+//! required for privilege level transitions (SYSCALL/SYSRET and Interrupts).
 //!
-//! - The **code segment** descriptor determines whether the CPU executes in
-//!   64-bit mode (`L=1, D=0`) or legacy compatibility mode.
-//! - The **data segment** descriptors must be valid for `SS`, `DS`, `ES`, etc.
-//! - A **null descriptor** at index 0 is architecturally required.
-//! - The **TSS descriptor** (not in Phase 1) will be required for syscall and
-//!   interrupt handling once those subsystems are implemented.
-//!
-//! # GDT Layout (Phase 1 — minimal)
+//! # GDT Layout (Phase 2)
 //!
 //! ```text
 //! Index │ Selector │ Description
-//! ──────┼──────────┼──────────────────────────────
+//! ──────┼──────────┼─────────────────────────────────────────────────
 //!   0   │  0x0000  │ Null descriptor (required)
 //!   1   │  0x0008  │ Kernel code segment (64-bit)
 //!   2   │  0x0010  │ Kernel data segment
+//!   3   │  0x001B  │ User code segment (32-bit compat) - SYSRET requires this!
+//!   4   │  0x0023  │ User data segment
+//!   5   │  0x002B  │ User code segment (64-bit)
+//!  6,7  │  0x0030  │ TSS descriptor (takes two slots in 64-bit mode)
 //! ```
-//!
-//! # Segment descriptor bit layout
-//!
-//! Each GDT entry is 8 bytes, encoded as a `u64` in little-endian:
-//!
-//! ```text
-//! Bits 63:56  Base[31:24]
-//! Bit  55     G   — Granularity (1 = 4 KiB pages, 0 = bytes)
-//! Bit  54     D/B — Default/Big (must be 0 for 64-bit code segment)
-//! Bit  53     L   — Long mode code (1 = 64-bit code segment)
-//! Bit  52     AVL — Available for system software (0)
-//! Bits 51:48  Limit[19:16]
-//! Bit  47     P   — Present (must be 1 for valid segment)
-//! Bits 46:45  DPL — Descriptor Privilege Level (0 = kernel)
-//! Bit  44     S   — System (1 = code/data, 0 = system descriptor)
-//! Bits 43:40  Type (see below)
-//! Bits 39:16  Base[23:0]
-//! Bits 15:0   Limit[15:0]
-//! ```
-//!
-//! Type field for code segments (bit 44 S=1):
-//! - Bit 43 = 1 (executable)
-//! - Bit 42 = conforming (0 = non-conforming)
-//! - Bit 41 = readable (1 = can read via CS override)
-//! - Bit 40 = accessed (set by CPU on first use)
-//!
-//! Type field for data segments (bit 44 S=1, bit 43 = 0):
-//! - Bit 42 = expand-down (0 = normal)
-//! - Bit 41 = writable (1 = writeable)
-//! - Bit 40 = accessed (set by CPU on first use)
-//!
-//! # Phase notes
-//!
-//! In Phase 1, the `GDT` static and `init()` function are mirrored inline in
-//! `boot/src/main.rs` (since the bootloader and kernel run as the same binary).
-//! When the kernel becomes a separate ELF binary this module becomes the
-//! authoritative source and the duplicate in the boot crate is removed.
+
+use super::tss::TaskStateSegment;
 
 // ---------------------------------------------------------------------------
 // Descriptor values
 // ---------------------------------------------------------------------------
 
-/// Null descriptor — required at GDT index 0 by the x86-64 architecture.
-const NULL_DESCRIPTOR: u64 = 0x0000_0000_0000_0000;
+const NULL_DESCRIPTOR: u64 = 0;
 
-/// 64-bit kernel code segment descriptor.
-///
-/// Bit breakdown:
-/// - Base = 0, Limit = 0xFFFFF (ignored in 64-bit mode)
-/// - G=1 (4 KiB granularity), D=0 (must be 0 for 64-bit), L=1 (64-bit code),
-///   AVL=0
-/// - P=1 (present), DPL=0 (ring 0), S=1 (code/data), Type=0xA
-///   (executable + readable)
-///
-/// Encoded bytes (low → high): `FF FF 00 00 00 9A AF 00`
+// Kernel segments (Ring 0)
 const KERNEL_CODE_DESCRIPTOR: u64 = 0x00AF_9A00_0000_FFFF;
-
-/// Kernel data segment descriptor.
-///
-/// Bit breakdown:
-/// - Base = 0, Limit = 0xFFFFF (ignored in 64-bit mode)
-/// - G=1 (4 KiB granularity), D/B=1 (32-bit default operand size — harmless
-///   for data segments in 64-bit mode), L=0, AVL=0
-/// - P=1 (present), DPL=0 (ring 0), S=1 (code/data), Type=0x2
-///   (data, readable + writable)
-///
-/// Encoded bytes (low → high): `FF FF 00 00 00 92 CF 00`
 const KERNEL_DATA_DESCRIPTOR: u64 = 0x00CF_9200_0000_FFFF;
+
+// User segments (Ring 3, DPL=3 -> Type bit 45-46 = 11 -> OR with 0x600000000000)
+// User Code 32-bit: L=0, D=1 (32-bit default), S=1, P=1, DPL=3, Type=0xA
+const USER_CODE_32_DESCRIPTOR: u64 = 0x00CF_FA00_0000_FFFF;
+
+// User Data: L=0, D=1, S=1, P=1, DPL=3, Type=0x2
+const USER_DATA_DESCRIPTOR: u64 = 0x00CF_F200_0000_FFFF;
+
+// User Code 64-bit: L=1, D=0, S=1, P=1, DPL=3, Type=0xA
+const USER_CODE_64_DESCRIPTOR: u64 = 0x00AF_FA00_0000_FFFF;
 
 // ---------------------------------------------------------------------------
 // Segment selectors
-//
-// A segment selector is a 16-bit value:
-//   Bits 15:3  — Index into GDT (or LDT)
-//   Bit  2     — TI: Table Indicator (0 = GDT, 1 = LDT)
-//   Bits 1:0   — RPL: Requested Privilege Level
 // ---------------------------------------------------------------------------
 
-/// Kernel code segment selector: GDT index 1, TI=0 (GDT), RPL=0.
-pub const KERNEL_CODE_SELECTOR: u16 = 0x08;
+pub const KERNEL_CODE_SELECTOR: u16 = 0x08; // RPL 0
+pub const KERNEL_DATA_SELECTOR: u16 = 0x10; // RPL 0
+pub const USER_CODE_32_SELECTOR: u16 = 0x18 | 3; // RPL 3
+pub const USER_DATA_SELECTOR: u16 = 0x20 | 3; // RPL 3
+pub const USER_CODE_64_SELECTOR: u16 = 0x28 | 3; // RPL 3
+pub const TSS_SELECTOR: u16 = 0x30; // RPL 0
 
-/// Kernel data segment selector: GDT index 2, TI=0 (GDT), RPL=0.
-pub const KERNEL_DATA_SELECTOR: u16 = 0x10;
+// ---------------------------------------------------------------------------
+// TSS Descriptor (16 bytes in long mode)
+// ---------------------------------------------------------------------------
+
+#[repr(C, packed)]
+pub struct TssDescriptor {
+    pub low: u64,
+    pub high: u64,
+}
+
+impl TssDescriptor {
+    pub const fn new(tss_addr: u64) -> Self {
+        let base_low = (tss_addr & 0xFFFFFF) << 16;
+        let base_mid = ((tss_addr >> 24) & 0xFF) << 56;
+        let base_high = tss_addr >> 32;
+
+        let limit = (core::mem::size_of::<TaskStateSegment>() - 1) as u64;
+
+        // P=1, DPL=0, Type=0x9 (64-bit available TSS)
+        let flags_type = 0x0000_8900_0000_0000;
+
+        Self {
+            low: limit | base_low | base_mid | flags_type,
+            high: base_high,
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // GDT structure
 // ---------------------------------------------------------------------------
 
-/// The kernel's Global Descriptor Table.
-///
-/// Three entries: null, kernel code, kernel data. Aligned to 8 bytes so the
-/// CPU can fetch descriptors with a single aligned load.
 #[repr(C, align(8))]
-pub struct Gdt([u64; 3]);
+pub struct Gdt {
+    entries: [u64; 6],
+    tss: TssDescriptor,
+}
 
-/// The kernel's static GDT instance.
-///
-/// Declared `static` so the CPU can reference it indefinitely after the LGDT
-/// instruction executes. The `GdtPointer` below holds its address.
-pub static GDT: Gdt = Gdt([
-    NULL_DESCRIPTOR,
-    KERNEL_CODE_DESCRIPTOR,
-    KERNEL_DATA_DESCRIPTOR,
-]);
+pub static mut TSS: TaskStateSegment = TaskStateSegment::new();
 
-// ---------------------------------------------------------------------------
-// GDT pointer (passed to LGDT)
-// ---------------------------------------------------------------------------
+pub static mut GDT: Gdt = Gdt {
+    entries: [
+        NULL_DESCRIPTOR,
+        KERNEL_CODE_DESCRIPTOR,
+        KERNEL_DATA_DESCRIPTOR,
+        USER_CODE_32_DESCRIPTOR,
+        USER_DATA_DESCRIPTOR,
+        USER_CODE_64_DESCRIPTOR,
+    ],
+    // The TSS address must be calculated at runtime since Rust const
+    // evaluation cannot take addresses of statics (yet).
+    tss: TssDescriptor { low: 0, high: 0 },
+};
 
-/// Descriptor-table pointer used by the `LGDT` instruction.
-///
-/// Must be `#[repr(C, packed)]` so the CPU sees exactly:
-/// - 2 bytes: table size minus 1 (`limit`)
-/// - 8 bytes: linear base address of the table (`base`)
-///
-/// Total: 10 bytes, starting at the struct's address.
 #[repr(C, packed)]
 pub struct GdtPointer {
-    /// Size of the GDT in bytes, minus 1.
     pub limit: u16,
-    /// Linear (virtual) address of the GDT.
     pub base: u64,
 }
 
@@ -148,62 +115,22 @@ pub struct GdtPointer {
 // Initialisation
 // ---------------------------------------------------------------------------
 
-/// Load the GDT and reload all segment registers.
-///
-/// After this function returns, the CPU is executing with the new GDT active
-/// and all segment registers pointing to the Phase-1 kernel segments.
-///
-/// # Steps
-///
-/// 1. Execute `LGDT` to load the GDT register with the address and size of
-///    [`GDT`].
-/// 2. Reload `CS` via a far return (`RETFQ`) — the only reliable way to
-///    change the code segment in 64-bit mode without a task switch.
-/// 3. Reload `DS`, `ES`, `FS`, `GS`, `SS` with [`KERNEL_DATA_SELECTOR`].
-///
-/// # Safety
-///
-/// - Caller must be executing at CPL=0 (ring 0).
-/// - Interrupts must be disabled (`CLI` executed before this call). An
-///   interrupt arriving between `LGDT` and the far-return reload of CS could
-///   deliver control to an interrupt handler whose `IRETQ` would restore a
-///   stale CS, causing a General Protection Fault.
-/// - The [`GDT`] static must have been placed in memory that is mapped and
-///   accessible at its linear address for the lifetime of the CPU's operation
-///   with this GDT loaded.
 pub unsafe fn init() {
+    // 1. Initialize the TSS descriptor with the actual runtime address of TSS
+    let tss_addr = core::ptr::addr_of!(TSS) as u64;
+    GDT.tss = TssDescriptor::new(tss_addr);
+
     let ptr = GdtPointer {
         limit: (core::mem::size_of::<Gdt>() - 1) as u16,
         base: core::ptr::addr_of!(GDT) as u64,
     };
 
-    // Step 1: Load the GDT register.
-    //
-    // SAFETY: `ptr` is a valid GdtPointer on the stack. LGDT reads the 10
-    // bytes at `ptr`'s address and writes them into the GDTR. No other
-    // memory is modified. The instruction is valid at CPL=0.
     core::arch::asm!(
         "lgdt [{ptr}]",
         ptr = in(reg) &ptr,
         options(readonly, nostack, preserves_flags),
     );
 
-    // Step 2: Reload CS via far return.
-    //
-    // In 64-bit mode there is no `LJMP` encoding; the only way to reload CS
-    // is a far call/return or an IRETQ. We use a far return:
-    //
-    //   push new_cs    ← pushed first, lands at RSP+8 for RETFQ
-    //   push new_rip   ← label immediately after RETFQ; lands at RSP+0
-    //   retfq          ← pops RIP then CS; jumps to `2:`
-    //   2:             ← execution resumes here with CS = KERNEL_CODE_SELECTOR
-    //
-    // SAFETY:
-    // - KERNEL_CODE_SELECTOR points to a valid 64-bit code segment.
-    // - The label `1:` is within the same function; the far return lands on
-    //   the very next instruction, so no ABI invariants are violated.
-    // - `tmp` is a caller-save scratch register allocated by the compiler;
-    //   its value after the asm block is intentionally discarded.
     core::arch::asm!(
         "push {cs}",
         "lea {tmp}, [rip + 2f]",
@@ -214,14 +141,6 @@ pub unsafe fn init() {
         tmp = lateout(reg) _,
     );
 
-    // Step 3: Reload data segment registers.
-    //
-    // In 64-bit mode DS, ES, FS, GS, and SS are largely unused (base/limit
-    // ignored), but they must be loaded with a valid selector to avoid a
-    // General Protection Fault when an instruction references them.
-    //
-    // SAFETY: KERNEL_DATA_SELECTOR points to a valid data segment. All of
-    // these moves are valid at CPL=0 with the new GDT loaded.
     core::arch::asm!(
         "mov ds, ax",
         "mov es, ax",
@@ -230,5 +149,13 @@ pub unsafe fn init() {
         "mov ss, ax",
         in("ax") KERNEL_DATA_SELECTOR,
         options(nomem, nostack, preserves_flags),
+    );
+
+    // Load Task Register (TR). Not `nomem`: LTR reads the TSS descriptor from
+    // the GDT and writes its busy bit back.
+    core::arch::asm!(
+        "ltr ax",
+        in("ax") TSS_SELECTOR,
+        options(nostack, preserves_flags),
     );
 }

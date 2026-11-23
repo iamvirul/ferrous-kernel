@@ -19,7 +19,7 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
         with:
-          toolchain: nightly
+          toolchain: nightly-2026-06-29
           targets: x86_64-unknown-uefi
           components: rust-src
 
@@ -50,7 +50,7 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
         with:
-          toolchain: nightly
+          toolchain: nightly-2026-06-29
           targets: x86_64-unknown-uefi
           components: rust-src
 

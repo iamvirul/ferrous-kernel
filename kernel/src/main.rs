@@ -10,9 +10,9 @@
 #![no_std]
 #![no_main]
 
-pub mod arch;
-pub mod drivers;
-pub mod logger;
+use ferrous_kernel::arch;
+use ferrous_kernel::drivers;
+use ferrous_kernel::logger;
 
 use drivers::serial::SerialPort;
 

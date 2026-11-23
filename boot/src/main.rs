@@ -52,7 +52,8 @@ use ferrous_boot_info::{BitmapFrameAllocator, KernelBootInfo, KERNEL_BITMAP_WORD
 ///
 /// This stack is used only during the UEFI handoff sequence
 /// (exit_boot_services → kernel_entry). It is intentionally small —
-/// `kernel_main` immediately switches to the larger KERNEL_STACK.
+/// `kernel_entry` switches to the larger KERNEL_STACK before calling
+/// `kernel_main`.
 const BOOTSTRAP_STACK_SIZE: usize = 16 * 1024;
 
 /// Bootstrap stack used after `exit_boot_services()`.
@@ -89,17 +90,32 @@ const KERNEL_STACK_GUARD_SIZE: usize = 4 * 1024;
 
 /// The kernel's primary execution stack.
 ///
-/// `kernel_main` switches RSP to the top of this buffer immediately on entry,
-/// leaving the bootstrap stack behind. The stack is 16-byte aligned and large
+/// `kernel_entry` switches RSP to the top of this buffer and then calls
+/// `kernel_main`, leaving the bootstrap stack behind. The stack is 16-byte aligned and large
 /// enough for typical kernel call chains in Phase 1 (no deep recursion, no
 /// interrupt frames yet).
 ///
-/// SAFETY: switched to exactly once from `kernel_main` before any other
+/// SAFETY: switched to exactly once from `kernel_entry` before any other
 /// stack writes occur. Single-core, interrupts-disabled environment.
-#[repr(C, align(16))]
+#[repr(C, align(4096))]
 struct KernelStack([u8; KERNEL_STACK_SIZE]);
 
 static mut KERNEL_STACK: KernelStack = KernelStack([0u8; KERNEL_STACK_SIZE]);
+
+/// Size of the dedicated NMI interrupt stack (IST) in bytes.
+const NMI_IST_STACK_SIZE: usize = 16 * 1024;
+
+/// IDT vector of the non-maskable interrupt.
+const NMI_VECTOR: usize = 2;
+
+#[repr(C, align(16))]
+struct NmiIstStack([u8; NMI_IST_STACK_SIZE]);
+
+/// Kernel-owned stack the CPU switches to for every NMI (via the TSS IST).
+///
+/// SAFETY: only ever used as a hardware stack by NMI delivery after the
+/// Phase 2.1.4 setup writes its top into the TSS; never accessed via Rust.
+static mut NMI_IST_STACK: NmiIstStack = NmiIstStack([0u8; NMI_IST_STACK_SIZE]);
 
 // ---------------------------------------------------------------------------
 // KernelBootInfo static
@@ -848,8 +864,12 @@ fn efi_main() -> Status {
 /// - RDI must contain the address of a fully populated `KernelBootInfo`.
 /// - Interrupts must be disabled (`cli` must have been executed).
 /// - UEFI boot services must have already exited.
+///
+/// The ABI is pinned to `sysv64` because the handoff asm passes the argument
+/// in RDI. On `x86_64-unknown-uefi`, `extern "C"` is the Win64 ABI (first
+/// argument in RCX), which would silently read the wrong register.
 #[no_mangle]
-extern "C" fn kernel_entry(boot_info: *const KernelBootInfo) -> ! {
+extern "sysv64" fn kernel_entry(boot_info: *const KernelBootInfo) -> ! {
     // Validate the boot info pointer before touching anything else.
     //
     // SAFETY: `boot_info` is the address of KERNEL_BOOT_INFO, a valid
@@ -874,70 +894,54 @@ extern "C" fn kernel_entry(boot_info: *const KernelBootInfo) -> ! {
     // When the kernel becomes a separate flat binary, zero_bss() will be
     // performed at the start of kernel_entry in kernel/src/arch/x86_64/entry.rs.
 
-    kernel_main(info);
+    // --- Switch to the kernel primary stack and call kernel_main ---
+    //
+    // The switch MUST happen before kernel_main's prologue runs. Switching
+    // RSP from inside kernel_main (after `sub rsp, <frame>`) leaves its
+    // entire frame — ~34 KiB in debug builds — addressed above the new stack
+    // top, overlapping the statics that follow KERNEL_STACK (IDT, kernel
+    // page tables). That corruption surfaced as a triple fault in the
+    // Phase 2.1.2 smoke test once the frame grew large enough to reach the
+    // PD entry covering the kernel image.
+    //
+    // SAFETY:
+    // - KERNEL_STACK is a valid 64 KiB, 4096-byte-aligned static buffer;
+    //   `stack_top` is one past its end, the correct initial RSP for a
+    //   downward-growing stack, and is 16-byte aligned so RSP+8 is aligned
+    //   at kernel_main's entry as the SysV ABI requires.
+    // - `info` points to KERNEL_BOOT_INFO (validated above), a static that
+    //   lives for the kernel's lifetime; it is passed in RDI per sysv64,
+    //   matching kernel_main's declared ABI.
+    // - kernel_main is `-> !`; the pushed return address is never consumed,
+    //   so abandoning the bootstrap stack is sound.
+    // - Interrupts are disabled (cli in efi_main); nothing can observe RSP
+    //   mid-switch.
+    unsafe {
+        let stack_top = (core::ptr::addr_of!(KERNEL_STACK) as usize + KERNEL_STACK_SIZE) as u64;
+        core::arch::asm!(
+            "mov rsp, {stack}",
+            "xor rbp, rbp",
+            "call {main}",
+            stack = in(reg) stack_top,
+            in("rdi") info as *const KernelBootInfo,
+            main = sym kernel_main,
+            options(noreturn),
+        );
+    }
 }
 
 /// First Rust function executing in the kernel context.
 ///
-/// On entry RSP points to the bootstrap stack (set up by the bootloader).
-/// The very first action is to switch to the kernel's own primary stack
-/// (`KERNEL_STACK`, 64 KiB) so we have adequate depth for kernel execution.
+/// Entered from `kernel_entry` with RSP already at the top of the kernel's
+/// primary stack (`KERNEL_STACK`, 64 KiB), so this function's frame lives
+/// entirely inside that buffer.
 ///
 /// At this point:
 /// - Boot services have exited.
-/// - We are on the bootstrap stack with interrupts disabled.
+/// - Interrupts are disabled.
 /// - `boot_info` is a reference into the `KERNEL_BOOT_INFO` static — valid
 ///   for the lifetime of the kernel.
-fn kernel_main(boot_info: &KernelBootInfo) -> ! {
-    // -----------------------------------------------------------------------
-    // Step 1: Switch to the kernel primary stack.
-    //
-    // We leave the bootstrap stack behind. From this point forward RSP
-    // points into KERNEL_STACK.
-    //
-    // Implementation note — register spilling:
-    //
-    // After `mov rsp`, the compiler's RSP-relative loads for any locals
-    // computed before the switch would read from the zeroed kernel stack
-    // rather than the bootstrap stack, producing garbage values. We avoid
-    // this by using an `inlateout` constraint to keep `boot_info` in a
-    // physical register throughout the switch; the register is not modified
-    // by the asm, so `info_out == info_in` after. Stack bounds are computed
-    // fresh from the static address AFTER the switch — accessed by absolute
-    // address, never RSP-relative.
-    //
-    // SAFETY:
-    // - KERNEL_STACK is a valid 64 KiB, 16-byte-aligned static buffer.
-    // - stack_top is one past the end of the array — the correct initial RSP
-    //   for a downward-growing x86-64 stack.
-    // - boot_info points to KERNEL_BOOT_INFO, a valid static that outlives
-    //   the kernel. Reconstructing the reference after the switch is safe.
-    // - kernel_main is `-> !`; the return address on the bootstrap stack is
-    //   never consumed.
-    // - Interrupts are disabled; no context switch can race this.
-    // Switch RSP to the kernel stack. After this instruction the bootstrap
-    // stack is abandoned. We must not read any local variables that the
-    // compiler might have spilled to the old stack after this point.
-    //
-    // Solution: use only static-address loads after the switch.
-    // - KERNEL_STACK and KERNEL_BOOT_INFO are statics; their addresses are
-    //   embedded as absolute values in the code, never RSP-relative.
-    // - We ignore the `boot_info` parameter and re-derive it from
-    //   KERNEL_BOOT_INFO directly after the switch.
-    unsafe {
-        let stack_top = (core::ptr::addr_of!(KERNEL_STACK) as usize + KERNEL_STACK_SIZE) as u64;
-        core::arch::asm!(
-            "mov rsp, {top}",
-            top = in(reg) stack_top,
-            options(nomem, nostack, preserves_flags),
-        );
-    }
-
-    // Re-derive boot_info from the static — absolute address, never spilled.
-    // SAFETY: KERNEL_BOOT_INFO is fully populated before exit_boot_services()
-    // and is immutable from this point forward.
-    let boot_info = unsafe { &*core::ptr::addr_of!(KERNEL_BOOT_INFO) };
-
+extern "sysv64" fn kernel_main(boot_info: &'static KernelBootInfo) -> ! {
     // Stack bounds computed from static address, not RSP-relative.
     let stack_bottom = unsafe { core::ptr::addr_of!(KERNEL_STACK) as usize };
     let stack_top = stack_bottom + KERNEL_STACK_SIZE;
@@ -1765,23 +1769,13 @@ fn kernel_main(boot_info: &KernelBootInfo) -> ! {
         Ok(kmap) => {
             // SAFETY: kernel's frame allocator is uninitialised at this point;
             // single-threaded, interrupts disabled.
-            unsafe { ferrous_kernel::memory::frame_allocator::init(&kmap) };
-
-            // Fence the allocator to the bootstrap identity-mapped window
-            // [0, 1 GiB).  The CR3 loaded in Step 7 identity-maps only
-            // [0, 0x4000_0000); `address_space::smoke_test` dereferences
-            // page-table frame addresses directly (VA == PA).  Any frame at
-            // or above 1 GiB is outside the mapped window and would cause a
-            // page fault when written.  Mark everything from 1 GiB upward as
-            // reserved so the allocator never hands out such a frame.
+            // Use init_below so we only mark frames in the 1 GiB identity-
+            // mapped window as free — this avoids writing to the upper 15/16
+            // of the 2 MiB BSS bitmap (which would cause ~250k page faults in
+            // QEMU TCG mode and hang the emulator).
             const IDENTITY_MAP_END: u64 = 0x4000_0000; // 1 GiB
-                                                       // SAFETY: frame allocator is initialised (line above); single-
-                                                       // threaded with interrupts disabled.
             unsafe {
-                ferrous_kernel::memory::frame_allocator::mark_reserved(
-                    IDENTITY_MAP_END,
-                    u64::MAX - IDENTITY_MAP_END,
-                );
+                ferrous_kernel::memory::frame_allocator::init_below(&kmap, IDENTITY_MAP_END);
             }
 
             // The kernel allocator was seeded from the raw memory map, which
@@ -1803,6 +1797,42 @@ fn kernel_main(boot_info: &KernelBootInfo) -> ! {
             serial_write_str("\r\n[...] ELF loader smoke test (Phase 2.1.3)\r\n");
             unsafe { ferrous_kernel::task::elf::smoke_test() };
             serial_write_str("[OK] ELF loader smoke test complete\r\n");
+
+            // ---------------------------------------------------------------
+            // Step 17: Kernel / User Mode Transition smoke test (Phase 2.1.4)
+            //
+            // Exercises the full ring-0 → ring-3 → SYSCALL → ring-0 → SYSRET
+            // → ring-3 transition path.
+            //
+            // Sequence:
+            //   1. Load the kernel GDT (adds DPL=3 segments + TSS).
+            //   2. Initialise the TSS (RSP0 = current kernel stack top).
+            //   3. Set KernelGsBase MSR to CpuLocal (for SWAPGS in syscall stub).
+            //   4. Write SYSCALL MSRs (STAR / LSTAR / SFMASK).
+            //   5. Map one 4 KiB code page and one 4 KiB stack page in the kernel
+            //      frame allocator's address space.
+            //   6. Copy a tiny machine-code stub into the code page.
+            //   7. Jump to ring-3 via IRETQ.
+            //   8. Stub executes SYSCALL 1 → kernel prints the first [PASS].
+            //   9. SYSRET returns to ring-3 → stub executes SYSCALL 2, which
+            //      proves user code resumed → kernel prints the second [PASS].
+            //  10. Second SYSRET → stub stays in ring 3 in a `pause` loop.
+            //      This is the successful end state: control never returns
+            //      to the boot path, and the verify harness's timeout stops
+            //      QEMU. A timeout here is expected, not a failed boot.
+            //
+            // Expected serial output:
+            //   "Kernel/user mode transition smoke test (Phase 2.1.4)"
+            //   "[OK] 17.1) GDT + TSS loaded (DPL=3 segments active)"
+            //   "[OK] 17.2) SYSCALL MSRs initialised"
+            //   "[OK] 17.3) User code + stack pages mapped"
+            //   "[PASS] Syscall received from Ring 3!"
+            //   "[PASS] Ring 3 resumed after SYSRET"
+            // ---------------------------------------------------------------
+            serial_write_str("\r\n[...] Kernel/user mode transition smoke test (Phase 2.1.4)\r\n");
+            unsafe {
+                kernel_user_mode_smoke_test();
+            }
         }
         Err(_) => {
             serial_write_str("[SKIP] Address space smoke test: memory map parse failed\r\n");
@@ -1820,6 +1850,155 @@ fn kernel_main(boot_info: &KernelBootInfo) -> ! {
 // serial_write_usize_hex) are now provided by boot/src/serial.rs and
 // re-exported at the crate root by `pub use serial::{...}` above.
 // See boot/src/serial.rs for the BootSerialPort implementation (Phase 1.4.4).
+
+// ---------------------------------------------------------------------------
+// Phase 2.1.4 — Kernel / User Mode Transition Smoke Test
+// ---------------------------------------------------------------------------
+
+/// Run the Phase 2.1.4 kernel/user mode transition smoke test.
+///
+/// Requires:
+/// - Frame allocator already initialised (Step 15 in `kernel_main`).
+/// - Identity mapping (VA == PA) in effect.
+/// - `reserve_bootstrap_page_table_frames()` already called.
+///
+/// # Safety
+///
+/// Single-threaded, CPL = 0, interrupts disabled.
+unsafe fn kernel_user_mode_smoke_test() {
+    use ferrous_kernel::arch::x86_64;
+    use ferrous_kernel::memory::{address_space, frame_allocator};
+
+    // Step 17.1 — Load the kernel GDT (adds DPL=3 segments and a TSS descriptor).
+    x86_64::gdt::init();
+
+    // Point TSS.RSP0 at the current kernel stack so that hardware will restore
+    // it on privilege changes triggered by exceptions in ring-3.
+    // We capture RSP here (still a valid kernel stack pointer).
+    // Rounded down to 16 bytes: the SYSCALL stub's push count assumes an
+    // aligned kernel stack so `call syscall_dispatcher` meets the SysV ABI.
+    let kernel_rsp: u64;
+    core::arch::asm!("mov {}, rsp", out(reg) kernel_rsp, options(nomem, nostack));
+    let kernel_rsp = kernel_rsp & !0xF;
+    #[allow(static_mut_refs)]
+    {
+        x86_64::gdt::TSS.rsp0 = kernel_rsp;
+    }
+
+    // Deliver NMIs on a dedicated kernel stack (IST). NMIs ignore IF, so one
+    // can land in the SYSCALL entry/exit windows where CPL is 0 but RSP is
+    // still the user stack; with IST=0 the CPU would push onto that stack.
+    // The TSS slot is written before the gate references it, and the TSS is
+    // already loaded (LTR above), so there is no window with a dangling IST.
+    #[allow(static_mut_refs)]
+    {
+        let nmi_stack_top =
+            (core::ptr::addr_of!(NMI_IST_STACK) as usize + NMI_IST_STACK_SIZE) as u64;
+        let mut ist = x86_64::gdt::TSS.ist;
+        ist[usize::from(x86_64::tss::NMI_IST_INDEX) - 1] = nmi_stack_top;
+        x86_64::gdt::TSS.ist = ist;
+        IDT.0[NMI_VECTOR].ist = x86_64::tss::NMI_IST_INDEX;
+    }
+    serial_write_str("[OK] 17.1) GDT + TSS loaded (DPL=3 segments active)\r\n");
+
+    // Step 17.2 — Initialise CPU-local GS base and SYSCALL/SYSRET MSRs.
+    x86_64::cpu::init();
+    // Set the kernel stack pointer in CpuLocal so the SYSCALL entry stub can
+    // switch to it via `mov rsp, gs:[0]`.
+    #[allow(static_mut_refs)]
+    {
+        x86_64::cpu::CPU_LOCAL.kernel_stack = kernel_rsp;
+    }
+    x86_64::syscall::init();
+    serial_write_str("[OK] 17.2) SYSCALL MSRs initialised\r\n");
+
+    // Step 17.3 — Map one user code page and one user stack page.
+    //
+    // User virtual addresses (arbitrary, below the canonical hole):
+    const USER_CODE_VA: u64 = 0x0000_1000_0000_0000;
+    const USER_STACK_VA: u64 = 0x0000_2000_0000_0000;
+    const PAGE_SIZE: usize = 4096;
+
+    use address_space::{RegionKind, VirtualRegion};
+    use ferrous_kernel::memory::paging::VirtualAddress;
+
+    // Create a fresh address space for the user task.
+    let mut aspace = address_space::AddressSpace::new()
+        .expect("AddressSpace::new failed in Phase 2.1.4 smoke test");
+
+    // Map the code region (read-execute for user).
+    let code_region = VirtualRegion {
+        base: VirtualAddress::try_new(USER_CODE_VA).unwrap(),
+        size: PAGE_SIZE,
+        kind: RegionKind::Code,
+    };
+    aspace
+        .map_region(code_region)
+        .expect("failed to map user code page");
+
+    // Map the stack region (read-write for user).
+    let stack_region = VirtualRegion {
+        base: VirtualAddress::try_new(USER_STACK_VA).unwrap(),
+        size: PAGE_SIZE,
+        kind: RegionKind::Stack,
+    };
+    aspace
+        .map_region(stack_region)
+        .expect("failed to map user stack page");
+    serial_write_str("[OK] 17.3) User code + stack pages mapped\r\n");
+
+    // Step 17.4 — Copy the user-mode stub into the code page.
+    //
+    // The stub (x86-64 machine code):
+    //   mov eax, 1    ; B8 01 00 00 00 — SMOKE_SYSCALL_ENTER (zero-extends RAX)
+    //   syscall       ; 0F 05          — enters ring 0 via SYSCALL
+    //   mov eax, 2    ; B8 02 00 00 00 — SMOKE_SYSCALL_AFTER_SYSRET
+    //   syscall       ; 0F 05          — only reached if SYSRET resumed us
+    //   pause         ; F3 90          — spin-loop hint, stays in ring 3
+    //   jmp $ - 2     ; EB FC          — back to `pause`, forever
+    //
+    // HLT cannot be used here: it is privileged, so executing it at CPL=3
+    // raises #GP immediately after a successful round trip. The verify
+    // script's timeout ends the run.
+    const _: () = assert!(x86_64::syscall::SMOKE_SYSCALL_ENTER == 1);
+    const _: () = assert!(x86_64::syscall::SMOKE_SYSCALL_AFTER_SYSRET == 2);
+    const USER_STUB: &[u8] = &[
+        0xB8, 0x01, 0x00, 0x00, 0x00, // mov eax, 1
+        0x0F, 0x05, // syscall
+        0xB8, 0x02, 0x00, 0x00, 0x00, // mov eax, 2
+        0x0F, 0x05, // syscall
+        0xF3, 0x90, // pause
+        0xEB, 0xFC, // jmp -4 (back to pause)
+    ];
+    // Translate the user VA to get the physical address (= identity-map VA).
+    let code_pa = aspace
+        .translate(VirtualAddress::try_new(USER_CODE_VA).unwrap())
+        .expect("code page must be mapped");
+    let code_ptr = code_pa as *mut u8;
+    core::ptr::copy_nonoverlapping(USER_STUB.as_ptr(), code_ptr, USER_STUB.len());
+
+    // Copy the bootloader's lower-half identity mapping into the new address space.
+    // The bootloader executes from the lower half (< 1 GiB), which is covered by
+    // PML4 entry 0. If we don't copy this, switching CR3 will immediately page fault
+    // on the next instruction fetch.
+    let cr3: u64;
+    core::arch::asm!("mov {cr3}, cr3", cr3 = out(reg) cr3, options(nomem, nostack));
+    let boot_pml4 = &*((cr3 & !0xFFF) as *const ferrous_kernel::memory::paging::PageTable);
+    let new_pml4 = &mut *(aspace.pml4_phys() as *mut ferrous_kernel::memory::paging::PageTable);
+    *new_pml4.entry_mut(0) = *boot_pml4.entry(0);
+
+    // Switch to the new address space.
+    aspace.switch_to();
+
+    // Step 17.5 — Jump to ring 3 via IRETQ.
+    //
+    // User RSP points just past the top of the stack page (stack grows down).
+    let user_rsp = USER_STACK_VA + PAGE_SIZE as u64;
+    x86_64::syscall::jump_to_user_mode(USER_CODE_VA, user_rsp);
+    // jump_to_user_mode() is `-> !` so we never reach here.
+    // syscall_dispatcher prints a [PASS] line for each of the stub's two
+    // syscalls; after the second SYSRET the stub spins in ring 3 forever.
+}
 
 // ---------------------------------------------------------------------------
 // Page-table frame reservation helper
@@ -1863,8 +2042,13 @@ unsafe fn reserve_bootstrap_page_table_frames() {
     );
     let pml4_phys = cr3 & !0xFFF;
 
+    serial_write_str("[INFO] Reserving bootstrap PT frames...\r\n");
+
     // Reserve the PML4 frame itself.
     ferrous_kernel::memory::frame_allocator::mark_reserved(pml4_phys, PAGE_SIZE);
+    serial_write_str("  PML4: 0x");
+    serial_write_usize_hex(pml4_phys as usize);
+    serial_write_str("\r\n");
 
     // Walk PML4 → PDPT → PD → PT.
     let pml4 = pml4_phys as *const u64;
@@ -1873,13 +2057,15 @@ unsafe fn reserve_bootstrap_page_table_frames() {
         if pml4e & PRESENT == 0 {
             continue;
         }
-        // 1 GiB huge pages have no PDPT frame — skip.
         if pml4e & HUGE != 0 {
             continue;
         }
 
         let pdpt_phys = pml4e & PHYS_MASK;
         ferrous_kernel::memory::frame_allocator::mark_reserved(pdpt_phys, PAGE_SIZE);
+        serial_write_str("  PDPT: 0x");
+        serial_write_usize_hex(pdpt_phys as usize);
+        serial_write_str("\r\n");
 
         let pdpt = pdpt_phys as *const u64;
         for j in 0..TABLE_ENTRIES {
@@ -1893,6 +2079,9 @@ unsafe fn reserve_bootstrap_page_table_frames() {
 
             let pd_phys = pdpte & PHYS_MASK;
             ferrous_kernel::memory::frame_allocator::mark_reserved(pd_phys, PAGE_SIZE);
+            serial_write_str("  PD:   0x");
+            serial_write_usize_hex(pd_phys as usize);
+            serial_write_str("\r\n");
 
             let pd = pd_phys as *const u64;
             for k in 0..TABLE_ENTRIES {
@@ -1907,6 +2096,9 @@ unsafe fn reserve_bootstrap_page_table_frames() {
                 // Non-huge PD entry → a PT frame.
                 let pt_phys = pde & PHYS_MASK;
                 ferrous_kernel::memory::frame_allocator::mark_reserved(pt_phys, PAGE_SIZE);
+                serial_write_str("  PT:   0x");
+                serial_write_usize_hex(pt_phys as usize);
+                serial_write_str("\r\n");
             }
         }
     }
@@ -2075,6 +2267,13 @@ global_asm!(
     ".global __exception_common",
     "__exception_common:",
     "cli",
+    // SysV ABI: DF must be clear on function entry, and ring-3 code may
+    // have left it set (interrupt delivery does not clear it).
+    "cld",
+    // The CPU frame (5 or 6 qwords, minus the popped error code) leaves RSP
+    // 8 bytes off the 16-byte alignment SysV requires at a `call`. RDX
+    // already holds the frame pointer, so realigning RSP is safe.
+    "and rsp, -16",
     "call exception_handler",
     "ud2", // unreachable — traps if the call somehow returns
     // ---------------------------------------------------------------------------
@@ -2256,8 +2455,14 @@ static EXCEPTION_NAMES: [&str; 32] = [
 ///   this function (which never returns).
 /// - Interrupts are disabled (`cli` executed in the stubs).
 /// - Must be `#[no_mangle]` so the linker name matches the `call` in asm.
+/// - The ABI is pinned to `sysv64`: on `x86_64-unknown-uefi`, `extern "C"`
+///   is Win64 (RCX, RDX, R8), which would misread every argument.
 #[no_mangle]
-extern "C" fn exception_handler(vector: u64, error_code: u64, frame: *const ExceptionFrame) -> ! {
+extern "sysv64" fn exception_handler(
+    vector: u64,
+    error_code: u64,
+    frame: *const ExceptionFrame,
+) -> ! {
     serial_write_str("\r\n");
     serial_write_str("========== KERNEL EXCEPTION ==========\r\n");
 

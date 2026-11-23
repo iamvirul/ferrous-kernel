@@ -17,9 +17,9 @@ This guide walks you through setting up a development environment for Ferrous Ke
 ### Required Software
 
 1. **Rust Toolchain**
-   - Version: Latest nightly (required for `no_std` kernel development)
+   - Version: `nightly-2026-06-29` (required for `no_std` kernel development; matches CI)
    - Install from: https://rustup.rs/
-   - Verify: `rustc --version` (should show nightly)
+   - Verify: `rustup show active-toolchain` (should show `nightly-2026-06-29`)
 
 2. **QEMU**
    - Version: 6.0+ recommended
@@ -62,18 +62,19 @@ This guide walks you through setting up a development environment for Ferrous Ke
 # Install rustup (if not already installed)
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
-# Install nightly toolchain
-rustup toolchain install nightly
+# Install the CI-pinned nightly toolchain
+rustup toolchain install nightly-2026-06-29
 
-# Set nightly as default (recommended for kernel development)
-rustup default nightly
+# Set the pinned nightly as default (recommended for kernel development)
+rustup default nightly-2026-06-29
 
 # Add rust-src component (needed for some tools)
-rustup component add rust-src
+rustup component add rust-src --toolchain nightly-2026-06-29
 
 # Verify installation
 rustc --version
 cargo --version
+rustup show active-toolchain
 ```
 
 ### 2. Clone the Repository
@@ -91,10 +92,10 @@ git branch
 
 ```bash
 # Add the UEFI target (for the bootloader)
-rustup target add x86_64-unknown-uefi
+rustup target add x86_64-unknown-uefi --toolchain nightly-2026-06-29
 
 # Add the bare-metal target (for the kernel)
-rustup target add x86_64-unknown-none
+rustup target add x86_64-unknown-none --toolchain nightly-2026-06-29
 ```
 
 ### 4. Activate the pre-commit hook
@@ -121,10 +122,10 @@ cd boot && cargo build && cd ..
 
 ```bash
 # Install rustfmt (code formatting)
-rustup component add rustfmt
+rustup component add rustfmt --toolchain nightly-2026-06-29
 
 # Install clippy (linter)
-rustup component add clippy
+rustup component add clippy --toolchain nightly-2026-06-29
 
 # Verify tools
 cargo fmt --version
@@ -199,8 +200,8 @@ sudo dnf install -y \
 Run these commands to verify your environment is set up correctly:
 
 ```bash
-# Check Rust version (should show nightly)
-rustc --version
+# Check the active toolchain (should show nightly-2026-06-29)
+rustup show active-toolchain
 
 # Check Cargo version
 cargo --version
@@ -312,15 +313,15 @@ source $HOME/.cargo/env
 export PATH="$HOME/.cargo/bin:$PATH"
 ```
 
-**Problem:** Wrong Rust version (stable instead of nightly)
+**Problem:** Wrong Rust toolchain is active
 
 **Solution:**
 ```bash
-# Set nightly as default
-rustup default nightly
+# Set the pinned nightly as default
+rustup default nightly-2026-06-29
 
 # Verify
-rustc --version
+rustup show active-toolchain
 ```
 
 ### QEMU Issues

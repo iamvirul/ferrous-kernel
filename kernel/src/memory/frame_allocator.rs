@@ -96,6 +96,30 @@ pub unsafe fn init(map: &MemoryMap) {
     INITIALIZED.store(true, Ordering::Release);
 }
 
+/// Initialise the global frame allocator, but only mark frames **below**
+/// `phys_limit` as free.
+///
+/// This is identical to [`init`] except that it never writes to the portion
+/// of the 2 MiB BSS bitmap that corresponds to frames at or above
+/// `phys_limit`.  In QEMU TCG mode, writing to the upper bitmap triggers
+/// thousands of demand-page faults; this variant avoids that entirely for
+/// smoke tests that only need low-memory frames.
+///
+/// # Safety
+///
+/// Same as [`init`]: called exactly once, single-threaded, interrupts disabled.
+pub unsafe fn init_below(map: &MemoryMap, phys_limit: u64) {
+    debug_assert!(
+        !INITIALIZED.load(Ordering::Relaxed),
+        "frame_allocator::init_below() called more than once"
+    );
+
+    #[allow(static_mut_refs)]
+    ALLOCATOR.init_from_memory_map_below(map, phys_limit);
+
+    INITIALIZED.store(true, Ordering::Release);
+}
+
 /// Allocates a single 4 KiB physical frame.
 ///
 /// Returns `None` if all usable frames are exhausted (out-of-memory).

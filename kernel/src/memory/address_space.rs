@@ -470,8 +470,6 @@ impl AddressSpace {
         let pml4 = &mut *(pml4_frame.start_address() as *mut PageTable);
         pml4.zero();
 
-        // Copy kernel higher-half entries from the current (bootstrap) PML4.
-        // Mask out CR3 control bits (PCID / PWT / PCD live in bits 0–11).
         let cr3: u64;
         core::arch::asm!("mov {cr3}, cr3", cr3 = out(reg) cr3, options(nomem, nostack));
         let boot_pml4 = &*((cr3 & !0xFFF) as *const PageTable);
