@@ -76,6 +76,26 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   implemented types and file locations; boot sequence annotated with
   v0.1.0 completion status
 
+### Fixed
+
+#### Phase 2.1.4 - Kernel/User Mode Transition (ring 3 round trip now validated in QEMU)
+- Boot: switch to `KERNEL_STACK` in `kernel_entry` before calling
+  `kernel_main`, instead of `mov rsp` inside `kernel_main`'s body. The old
+  switch left `kernel_main`'s ~34 KiB debug frame addressed above the stack
+  top, corrupting the IDT and kernel page tables; this was the real cause of
+  the Phase 2.1.2 "hang" (actually a triple fault)
+- `BitmapFrameAllocator` never hands out PFN 0: physical address 0 is
+  indistinguishable from null under VA == PA, and `AddressSpace::new` was
+  receiving a PML4 at PA 0
+- `syscall::init` sets `EFER.SCE`; without it ring-3 `syscall` raised #UD
+- `kernel_entry`, `kernel_main`, `exception_handler`, and
+  `syscall_dispatcher` are `extern "sysv64"`: on `x86_64-unknown-uefi`,
+  `extern "C"` is Win64 and read arguments from the wrong registers (every
+  exception report printed a garbage vector)
+- Exception common stub realigns RSP to 16 bytes before calling the handler
+- User smoke-test stub spins with `pause` after SYSRET instead of `hlt`,
+  which is privileged and faults at CPL 3
+
 ---
 
 ## [0.1.0] - 2026-05-16
