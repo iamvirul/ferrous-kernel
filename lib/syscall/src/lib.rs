@@ -178,7 +178,8 @@ impl<T> UserPtr<T> {
     ///
     /// [`SyscallError::Fault`] if any of these hold:
     /// - `count * size_of::<T>()` overflows, or `addr + byte_len` overflows;
-    /// - the range ends above [`USER_SPACE_END`] (kernel or non-canonical);
+    /// - `addr` is not below [`USER_SPACE_END`], or the range ends above it
+    ///   (kernel or non-canonical);
     /// - `addr` is null and the range is non-empty;
     /// - `addr` is not aligned to `align_of::<T>()`.
     ///
@@ -192,7 +193,9 @@ impl<T> UserPtr<T> {
             .ok_or(SyscallError::Fault)?;
         let end = addr.checked_add(byte_len).ok_or(SyscallError::Fault)?;
 
-        if end > USER_SPACE_END {
+        // The start must itself be a user address. `end > USER_SPACE_END`
+        // alone would admit an *empty* range starting at the exclusive bound.
+        if addr >= USER_SPACE_END || end > USER_SPACE_END {
             return Err(SyscallError::Fault);
         }
         if byte_len != 0 && addr == 0 {
@@ -395,6 +398,16 @@ mod tests {
     fn empty_range_is_accepted_even_at_null() {
         let p = UserPtr::<u8>::new(0, 0).unwrap();
         assert!(p.is_empty());
+    }
+
+    #[test]
+    fn empty_range_at_user_space_end_is_rejected() {
+        // USER_SPACE_END is the exclusive bound: it is not a user address,
+        // even for a range that covers no bytes.
+        assert_eq!(
+            UserPtr::<u8>::new(USER_SPACE_END, 0).unwrap_err(),
+            SyscallError::Fault
+        );
     }
 
     #[test]
