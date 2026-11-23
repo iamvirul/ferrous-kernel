@@ -238,6 +238,9 @@ EXPECTED_STRINGS=(
     "[OK] 17.2) SYSCALL MSRs initialised"
     "[OK] 17.3) User code + stack pages mapped"
     "[PASS] Syscall received from Ring 3!"
+    # Printed by a second syscall that user code only reaches if the first
+    # SYSRET actually resumed ring 3, so a broken return path cannot pass.
+    "[PASS] Ring 3 resumed after SYSRET"
 )
 
 run_and_verify() {

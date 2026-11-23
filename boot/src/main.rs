@@ -1813,9 +1813,13 @@ extern "sysv64" fn kernel_main(boot_info: &'static KernelBootInfo) -> ! {
             //      frame allocator's address space.
             //   6. Copy a tiny machine-code stub into the code page.
             //   7. Jump to ring-3 via IRETQ.
-            //   8. Stub executes SYSCALL → kernel prints [PASS] string.
-            //   9. SYSRET returns to ring-3 → stub executes HLT loop (kernel
-            //      halts normally after).
+            //   8. Stub executes SYSCALL 1 → kernel prints the first [PASS].
+            //   9. SYSRET returns to ring-3 → stub executes SYSCALL 2, which
+            //      proves user code resumed → kernel prints the second [PASS].
+            //  10. Second SYSRET → stub stays in ring 3 in a `pause` loop.
+            //      This is the successful end state: control never returns
+            //      to the boot path, and the verify harness's timeout stops
+            //      QEMU. A timeout here is expected, not a failed boot.
             //
             // Expected serial output:
             //   "Kernel/user mode transition smoke test (Phase 2.1.4)"
@@ -1823,7 +1827,7 @@ extern "sysv64" fn kernel_main(boot_info: &'static KernelBootInfo) -> ! {
             //   "[OK] 17.2) SYSCALL MSRs initialised"
             //   "[OK] 17.3) User code + stack pages mapped"
             //   "[PASS] Syscall received from Ring 3!"
-            //   "[OK] Kernel/user mode transition smoke test complete"
+            //   "[PASS] Ring 3 resumed after SYSRET"
             // ---------------------------------------------------------------
             serial_write_str("\r\n[...] Kernel/user mode transition smoke test (Phase 2.1.4)\r\n");
             unsafe {
@@ -1946,14 +1950,22 @@ unsafe fn kernel_user_mode_smoke_test() {
     // Step 17.4 — Copy the user-mode stub into the code page.
     //
     // The stub (x86-64 machine code):
-    //   syscall       ; 0F 05 — enters ring 0 via SYSCALL
-    //   pause         ; F3 90 — spin-loop hint after SYSRET returns to ring 3
-    //   jmp $ - 2     ; EB FC — back to `pause`, forever
+    //   mov eax, 1    ; B8 01 00 00 00 — SMOKE_SYSCALL_ENTER (zero-extends RAX)
+    //   syscall       ; 0F 05          — enters ring 0 via SYSCALL
+    //   mov eax, 2    ; B8 02 00 00 00 — SMOKE_SYSCALL_AFTER_SYSRET
+    //   syscall       ; 0F 05          — only reached if SYSRET resumed us
+    //   pause         ; F3 90          — spin-loop hint, stays in ring 3
+    //   jmp $ - 2     ; EB FC          — back to `pause`, forever
     //
     // HLT cannot be used here: it is privileged, so executing it at CPL=3
     // raises #GP immediately after a successful round trip. The verify
     // script's timeout ends the run.
+    const _: () = assert!(x86_64::syscall::SMOKE_SYSCALL_ENTER == 1);
+    const _: () = assert!(x86_64::syscall::SMOKE_SYSCALL_AFTER_SYSRET == 2);
     const USER_STUB: &[u8] = &[
+        0xB8, 0x01, 0x00, 0x00, 0x00, // mov eax, 1
+        0x0F, 0x05, // syscall
+        0xB8, 0x02, 0x00, 0x00, 0x00, // mov eax, 2
         0x0F, 0x05, // syscall
         0xF3, 0x90, // pause
         0xEB, 0xFC, // jmp -4 (back to pause)
@@ -1984,8 +1996,8 @@ unsafe fn kernel_user_mode_smoke_test() {
     let user_rsp = USER_STACK_VA + PAGE_SIZE as u64;
     x86_64::syscall::jump_to_user_mode(USER_CODE_VA, user_rsp);
     // jump_to_user_mode() is `-> !` so we never reach here.
-    // The SYSCALL handler (syscall_dispatcher) will print [PASS] and SYSRET.
-    // After SYSRET the user stub spins in a ring-3 pause loop.
+    // syscall_dispatcher prints a [PASS] line for each of the stub's two
+    // syscalls; after the second SYSRET the stub spins in ring 3 forever.
 }
 
 // ---------------------------------------------------------------------------
