@@ -151,10 +151,11 @@ pub unsafe fn init() {
         options(nomem, nostack, preserves_flags),
     );
 
-    // Load Task Register (TR)
+    // Load Task Register (TR). Not `nomem`: LTR reads the TSS descriptor from
+    // the GDT and writes its busy bit back.
     core::arch::asm!(
         "ltr ax",
         in("ax") TSS_SELECTOR,
-        options(nomem, nostack, preserves_flags),
+        options(nostack, preserves_flags),
     );
 }
