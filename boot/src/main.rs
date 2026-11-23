@@ -2255,6 +2255,9 @@ global_asm!(
     ".global __exception_common",
     "__exception_common:",
     "cli",
+    // SysV ABI: DF must be clear on function entry, and ring-3 code may
+    // have left it set (interrupt delivery does not clear it).
+    "cld",
     // The CPU frame (5 or 6 qwords, minus the popped error code) leaves RSP
     // 8 bytes off the 16-byte alignment SysV requires at a `call`. RDX
     // already holds the frame pointer, so realigning RSP is safe.
