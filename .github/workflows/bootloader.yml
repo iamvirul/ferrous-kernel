@@ -32,6 +32,9 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # nightly
         with:
+          # Pinned: newer nightlies' compiler_builtins reference fmal/rintl,
+          # which are undefined on x86_64-unknown-uefi (debug link fails).
+          toolchain: nightly-2026-06-29
           targets: x86_64-unknown-uefi
           components: rust-src, rustfmt, clippy
 
@@ -80,6 +83,9 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # nightly
         with:
+          # Pinned: newer nightlies' compiler_builtins reference fmal/rintl,
+          # which are undefined on x86_64-unknown-uefi (debug link fails).
+          toolchain: nightly-2026-06-29
           targets: x86_64-unknown-uefi
           components: rust-src, clippy
 
@@ -288,6 +294,9 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # nightly
         with:
+          # Pinned: newer nightlies' compiler_builtins reference fmal/rintl,
+          # which are undefined on x86_64-unknown-uefi (debug link fails).
+          toolchain: nightly-2026-06-29
           targets: x86_64-unknown-uefi
           components: rust-src
 
