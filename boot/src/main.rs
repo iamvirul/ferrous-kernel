@@ -2221,6 +2221,10 @@ global_asm!(
     ".global __exception_common",
     "__exception_common:",
     "cli",
+    // The CPU frame (5 or 6 qwords, minus the popped error code) leaves RSP
+    // 8 bytes off the 16-byte alignment SysV requires at a `call`. RDX
+    // already holds the frame pointer, so realigning RSP is safe.
+    "and rsp, -16",
     "call exception_handler",
     "ud2", // unreachable — traps if the call somehow returns
     // ---------------------------------------------------------------------------
@@ -2402,8 +2406,14 @@ static EXCEPTION_NAMES: [&str; 32] = [
 ///   this function (which never returns).
 /// - Interrupts are disabled (`cli` executed in the stubs).
 /// - Must be `#[no_mangle]` so the linker name matches the `call` in asm.
+/// - The ABI is pinned to `sysv64`: on `x86_64-unknown-uefi`, `extern "C"`
+///   is Win64 (RCX, RDX, R8), which would misread every argument.
 #[no_mangle]
-extern "C" fn exception_handler(vector: u64, error_code: u64, frame: *const ExceptionFrame) -> ! {
+extern "sysv64" fn exception_handler(
+    vector: u64,
+    error_code: u64,
+    frame: *const ExceptionFrame,
+) -> ! {
     serial_write_str("\r\n");
     serial_write_str("========== KERNEL EXCEPTION ==========\r\n");
 
