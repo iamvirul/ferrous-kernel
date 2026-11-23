@@ -511,6 +511,12 @@ impl MemoryMap {
 /// Physical page size on x86_64: 4 KiB.
 pub const PAGE_SIZE: u64 = 4096;
 
+/// Physical frame number of the frame at physical address 0.
+///
+/// [`BitmapFrameAllocator`] never marks this frame free, so `allocate()`
+/// can never return a frame whose address equals a null pointer.
+const NULL_FRAME_PFN: usize = 0;
+
 /// Number of `u64` words in the kernel's physical frame allocator bitmap.
 ///
 /// Each word tracks 64 frames (4 KiB each), so this value supports up to
@@ -834,6 +840,11 @@ impl<const WORDS: usize> BitmapFrameAllocator<WORDS> {
     /// - The frame's bit is already set (double-free detection).
     pub fn deallocate(&mut self, frame: PhysFrame) {
         let pfn = frame.pfn() as usize;
+        // PFN 0 is never allocatable (see `set_range_free`); freeing it would
+        // inject it into the pool, so the request is ignored.
+        if pfn == NULL_FRAME_PFN {
+            return;
+        }
         let word = pfn / 64;
         let bit = pfn % 64;
 
@@ -882,6 +893,11 @@ impl<const WORDS: usize> BitmapFrameAllocator<WORDS> {
     /// Automatically increments `self.free_frames` for bits that transition
     /// from 0 to 1.
     fn set_range_free(&mut self, start_pfn: usize, end_pfn: usize) {
+        // PFN 0 (physical address 0) is never handed out: its start address
+        // is indistinguishable from a null pointer under the VA == PA
+        // identity mapping, so any page table or object placed there would
+        // be unusable through Rust references.
+        let start_pfn = start_pfn.max(NULL_FRAME_PFN + 1);
         if start_pfn >= end_pfn {
             return;
         }
@@ -1658,6 +1674,39 @@ mod tests {
     // -----------------------------------------------------------------------
     // BitmapFrameAllocator — deallocation
     // -----------------------------------------------------------------------
+
+    #[test]
+    fn init_never_frees_frame_zero() {
+        // Conventional memory starting at PA 0 (as on real x86 firmware):
+        // every frame except PFN 0 is free.
+        let (alloc, _) = make_allocator_with_map(&[(memory_type::CONVENTIONAL, 0x0, 4)]);
+        assert_eq!(alloc.free_frames(), 3);
+    }
+
+    #[test]
+    fn allocate_never_returns_frame_zero() {
+        let (mut alloc, _) = make_allocator_with_map(&[(memory_type::CONVENTIONAL, 0x0, 4)]);
+        let frames: std::vec::Vec<_> = core::iter::from_fn(|| alloc.allocate()).collect();
+        assert_eq!(frames.len(), 3);
+        assert!(frames.iter().all(|f| f.start_address() != 0));
+    }
+
+    #[test]
+    fn init_below_never_frees_frame_zero() {
+        let raw_map = make_map(&[make_desc(memory_type::CONVENTIONAL, 0x0, 4)]);
+        let parsed = MemoryMap::parse(&raw_map).unwrap();
+        let mut alloc = TestAlloc::new();
+        alloc.init_from_memory_map_below(&parsed, 0x10_0000);
+        assert_eq!(alloc.free_frames(), 3);
+    }
+
+    #[test]
+    fn deallocate_frame_zero_is_ignored() {
+        let (mut alloc, _) = make_allocator_with_map(&[(memory_type::CONVENTIONAL, 0x1000, 4)]);
+        let before = alloc.free_frames();
+        alloc.deallocate(PhysFrame::from_addr(0).unwrap());
+        assert_eq!(alloc.free_frames(), before);
+    }
 
     #[test]
     fn deallocate_increments_free_count() {
