@@ -3,15 +3,24 @@
 use super::gdt::{KERNEL_CODE_SELECTOR, USER_CODE_32_SELECTOR};
 use core::arch::global_asm;
 
+const IA32_EFER: u32 = 0xC000_0080;
 const IA32_STAR: u32 = 0xC000_0081;
 const IA32_LSTAR: u32 = 0xC000_0082;
 const IA32_FMASK: u32 = 0xC000_0084;
+
+/// EFER.SCE — System Call Extensions. While clear, `SYSCALL`/`SYSRET` raise #UD.
+const EFER_SCE: u64 = 1 << 0;
 
 /// Initialize the MSRs required for the `SYSCALL` and `SYSRET` instructions.
 ///
 /// # Safety
 /// Must be called at CPL=0 during early kernel initialization.
 pub unsafe fn init() {
+    // 0. Enable SYSCALL/SYSRET. UEFI firmware leaves EFER.SCE clear; without
+    //    it the first `syscall` from ring 3 faults with #UD. Read-modify-write
+    //    preserves LME/LMA/NXE, which must not change while paging is on.
+    wrmsr(IA32_EFER, rdmsr(IA32_EFER) | EFER_SCE);
+
     // 1. Configure STAR (Segment Selector Register)
     // Bits [47:32]: Kernel CS (used for SYSCALL). Kernel SS is implicitly CS + 8.
     // Bits [63:48]: User CS base (used for SYSRET).
@@ -30,6 +39,25 @@ pub unsafe fn init() {
     // We also mask TF (bit 8) and DF (bit 10).
     let fmask: u64 = 0x200 | 0x100 | 0x400;
     wrmsr(IA32_FMASK, fmask);
+}
+
+/// Read a Model Specific Register.
+///
+/// # Safety
+/// Must be called at CPL=0 with `msr` naming an MSR the CPU implements,
+/// otherwise `rdmsr` raises #GP.
+#[inline]
+unsafe fn rdmsr(msr: u32) -> u64 {
+    let low: u32;
+    let high: u32;
+    core::arch::asm!(
+        "rdmsr",
+        in("ecx") msr,
+        out("eax") low,
+        out("edx") high,
+        options(nomem, nostack, preserves_flags),
+    );
+    (u64::from(high) << 32) | u64::from(low)
 }
 
 /// Write to a Model Specific Register.
@@ -129,8 +157,14 @@ pub struct SyscallArgs {
     pub rax: u64,
 }
 
+/// Called from `syscall_entry` with RDI = `&mut SyscallArgs`.
+///
+/// The ABI is pinned to `sysv64` rather than `extern "C"`: this crate is also
+/// compiled for `x86_64-unknown-uefi` (linked into the boot image), where
+/// `extern "C"` is Win64 and would read the argument from RCX — which holds
+/// the user RIP at that point.
 #[no_mangle]
-extern "C" fn syscall_dispatcher(args: &mut SyscallArgs) {
+extern "sysv64" fn syscall_dispatcher(args: &mut SyscallArgs) {
     // Phase 2.1.4 syscall handler.
     // Print confirmation and return; the SYSRET in the asm stub will carry
     // execution back to user space (the hlt loop in the user stub).
