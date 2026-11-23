@@ -28,6 +28,14 @@ pub struct TaskStateSegment {
     pub iopb_offset: u16,
 }
 
+/// IST index (1-based, as encoded in an IDT gate) used for NMI delivery.
+///
+/// NMIs are not masked by `IF`, so one can arrive in the SYSCALL entry/exit
+/// windows where CPL is 0 but RSP is still the user stack. With IST=0 the CPU
+/// would push the NMI frame onto that user-controlled stack. A non-zero IST
+/// forces a switch to `ist[NMI_IST_INDEX - 1]`, a kernel-owned stack.
+pub const NMI_IST_INDEX: u8 = 1;
+
 impl TaskStateSegment {
     /// Create a new, empty TSS.
     pub const fn new() -> Self {

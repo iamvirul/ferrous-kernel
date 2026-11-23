@@ -102,6 +102,21 @@ struct KernelStack([u8; KERNEL_STACK_SIZE]);
 
 static mut KERNEL_STACK: KernelStack = KernelStack([0u8; KERNEL_STACK_SIZE]);
 
+/// Size of the dedicated NMI interrupt stack (IST) in bytes.
+const NMI_IST_STACK_SIZE: usize = 16 * 1024;
+
+/// IDT vector of the non-maskable interrupt.
+const NMI_VECTOR: usize = 2;
+
+#[repr(C, align(16))]
+struct NmiIstStack([u8; NMI_IST_STACK_SIZE]);
+
+/// Kernel-owned stack the CPU switches to for every NMI (via the TSS IST).
+///
+/// SAFETY: only ever used as a hardware stack by NMI delivery after the
+/// Phase 2.1.4 setup writes its top into the TSS; never accessed via Rust.
+static mut NMI_IST_STACK: NmiIstStack = NmiIstStack([0u8; NMI_IST_STACK_SIZE]);
+
 // ---------------------------------------------------------------------------
 // KernelBootInfo static
 // ---------------------------------------------------------------------------
@@ -1864,6 +1879,21 @@ unsafe fn kernel_user_mode_smoke_test() {
     #[allow(static_mut_refs)]
     {
         x86_64::gdt::TSS.rsp0 = kernel_rsp;
+    }
+
+    // Deliver NMIs on a dedicated kernel stack (IST). NMIs ignore IF, so one
+    // can land in the SYSCALL entry/exit windows where CPL is 0 but RSP is
+    // still the user stack; with IST=0 the CPU would push onto that stack.
+    // The TSS slot is written before the gate references it, and the TSS is
+    // already loaded (LTR above), so there is no window with a dangling IST.
+    #[allow(static_mut_refs)]
+    {
+        let nmi_stack_top =
+            (core::ptr::addr_of!(NMI_IST_STACK) as usize + NMI_IST_STACK_SIZE) as u64;
+        let mut ist = x86_64::gdt::TSS.ist;
+        ist[usize::from(x86_64::tss::NMI_IST_INDEX) - 1] = nmi_stack_top;
+        x86_64::gdt::TSS.ist = ist;
+        IDT.0[NMI_VECTOR].ist = x86_64::tss::NMI_IST_INDEX;
     }
     serial_write_str("[OK] 17.1) GDT + TSS loaded (DPL=3 segments active)\r\n");
 
