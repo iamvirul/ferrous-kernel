@@ -50,6 +50,9 @@ use super::{
     },
 };
 use crate::memory::frame_allocator::PhysFrame;
+// Upper bound (exclusive) of user virtual addresses; owned by the syscall ABI
+// so the kernel and its user-pointer validation share one definition.
+use ferrous_syscall::USER_SPACE_END;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -67,13 +70,6 @@ const PAGE_SIZE: usize = 4096;
 /// First PML4 index belonging to the kernel higher-half window
 /// (`0xFFFF_8000_0000_0000`, PML4 index 256).
 const KERNEL_PML4_START: usize = 256;
-
-/// Upper bound (exclusive) for user-space virtual addresses.
-///
-/// Addresses at or above this value are reserved for the kernel higher-half.
-/// `0x0000_8000_0000_0000` is the first non-canonical (hole) address in
-/// 4-level paging; the user half is `[0, USER_SPACE_END)`.
-const USER_SPACE_END: u64 = 0x0000_8000_0000_0000;
 
 // ---------------------------------------------------------------------------
 // RegionKind
@@ -420,6 +416,64 @@ pub unsafe fn translate_in(pml4_phys: u64, virt: VirtualAddress) -> Option<u64> 
         return None;
     }
     Some(pte.phys_addr() | virt.page_offset())
+}
+
+/// Physical address of the PML4 currently loaded in CR3.
+///
+/// During a syscall this is the calling process's address space.
+pub fn active_pml4_phys() -> u64 {
+    let cr3: u64;
+    // SAFETY: reading CR3 at CPL 0 has no side effects and touches no memory.
+    unsafe {
+        core::arch::asm!("mov {cr3}, cr3", cr3 = out(reg) cr3, options(nomem, nostack));
+    }
+    cr3 & flags::PHYS_ADDR_MASK
+}
+
+/// Returns `true` iff ring 3 may read `virt` under the page tables rooted at
+/// `pml4_phys`.
+///
+/// Requires `PRESENT` and `USER_ACCESSIBLE` at **every** level of the walk,
+/// including the leaf (4 KiB, 2 MiB, or 1 GiB). This is the property the CPU
+/// enforces for a CPL 3 access, so a `true` result means a user read of
+/// `virt` cannot fault, and a kernel read of it on the user's behalf never
+/// exposes supervisor-only memory (such as the lower-half identity map).
+///
+/// # Safety
+///
+/// - `pml4_phys` must be the physical address of a valid PML4.
+/// - Identity mapping (VA == PA) must hold for all page-table frames.
+pub unsafe fn is_user_readable_in(pml4_phys: u64, virt: VirtualAddress) -> bool {
+    fn user_present(entry: PageTableEntry) -> bool {
+        entry.is_present() && entry.raw() & flags::USER_ACCESSIBLE != 0
+    }
+
+    let pml4 = &*(pml4_phys as *const PageTable);
+    let pml4e = *pml4.entry(virt.pml4_index());
+    if !user_present(pml4e) {
+        return false;
+    }
+
+    let pdpt = &*(pml4e.phys_addr() as *const PageTable);
+    let pdpte = *pdpt.entry(virt.pdpt_index());
+    if !user_present(pdpte) {
+        return false;
+    }
+    if pdpte.is_huge() {
+        return true;
+    }
+
+    let pd = &*(pdpte.phys_addr() as *const PageTable);
+    let pde = *pd.entry(virt.pd_index());
+    if !user_present(pde) {
+        return false;
+    }
+    if pde.is_huge() {
+        return true;
+    }
+
+    let pt = &*(pde.phys_addr() as *const PageTable);
+    user_present(*pt.entry(virt.pt_index()))
 }
 
 // ---------------------------------------------------------------------------
