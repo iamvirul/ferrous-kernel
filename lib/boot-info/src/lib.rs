@@ -102,6 +102,12 @@ pub struct KernelMemoryMap {
     pub _pad: [u8; 7],
 }
 
+impl Default for KernelMemoryMap {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl KernelMemoryMap {
     pub const fn new() -> Self {
         Self {
@@ -187,6 +193,12 @@ pub struct KernelBootInfo {
 
     /// Null-terminated bootloader name string (ASCII).
     pub bootloader_name: [u8; 32],
+}
+
+impl Default for KernelBootInfo {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl KernelBootInfo {
@@ -545,7 +557,7 @@ impl PhysFrame {
     /// Returns `None` if `phys_addr` is not [`PAGE_SIZE`]-aligned.
     #[inline]
     pub fn from_addr(phys_addr: u64) -> Option<Self> {
-        if phys_addr % PAGE_SIZE == 0 {
+        if phys_addr.is_multiple_of(PAGE_SIZE) {
             Some(Self(phys_addr / PAGE_SIZE))
         } else {
             None
@@ -635,6 +647,12 @@ impl<const WORDS: usize> core::fmt::Debug for BitmapFrameAllocator<WORDS> {
     }
 }
 
+impl<const WORDS: usize> Default for BitmapFrameAllocator<WORDS> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<const WORDS: usize> BitmapFrameAllocator<WORDS> {
     // -----------------------------------------------------------------------
     // Construction
@@ -718,7 +736,9 @@ impl<const WORDS: usize> BitmapFrameAllocator<WORDS> {
         self.total_frames = WORDS * 64;
         self.free_frames = 0;
 
-        let limit_pfn = (phys_limit / PAGE_SIZE as u64) as usize;
+        // Round up: a frame is freed iff its *base* is below `phys_limit`,
+        // so an unaligned limit still includes the frame it falls inside.
+        let limit_pfn = phys_limit.div_ceil(PAGE_SIZE) as usize;
 
         for region in map.usable_regions() {
             let start_pfn = (region.phys_start / PAGE_SIZE) as usize;
@@ -745,11 +765,7 @@ impl<const WORDS: usize> BitmapFrameAllocator<WORDS> {
         let start_pfn = (phys_start / PAGE_SIZE) as usize;
         // Round up to the next page boundary, saturating to avoid u64 overflow.
         let end_addr = phys_start.saturating_add(size_bytes);
-        let end_pfn_raw = if end_addr == u64::MAX {
-            (end_addr / PAGE_SIZE) as usize + 1
-        } else {
-            ((end_addr + PAGE_SIZE - 1) / PAGE_SIZE) as usize
-        };
+        let end_pfn_raw = end_addr.div_ceil(PAGE_SIZE) as usize;
         // Cap at the bitmap boundary — no frame beyond WORDS*64 can be tracked.
         let end_pfn = end_pfn_raw.min(WORDS * 64);
 
@@ -758,7 +774,7 @@ impl<const WORDS: usize> BitmapFrameAllocator<WORDS> {
         }
 
         let start_word = start_pfn / 64;
-        let end_word = (end_pfn + 63) / 64; // round up to cover partial last word
+        let end_word = end_pfn.div_ceil(64); // round up to cover partial last word
 
         for word in start_word..end_word.min(WORDS) {
             // Build a mask of bits to clear in this word.
@@ -767,7 +783,7 @@ impl<const WORDS: usize> BitmapFrameAllocator<WORDS> {
             } else {
                 0
             };
-            let bit_hi = if word + 1 == end_word && end_pfn % 64 != 0 {
+            let bit_hi = if word + 1 == end_word && !end_pfn.is_multiple_of(64) {
                 end_pfn % 64
             } else {
                 64
@@ -812,6 +828,12 @@ impl<const WORDS: usize> BitmapFrameAllocator<WORDS> {
     ///
     /// Returns `None` if no free frames are available.
     pub fn allocate(&mut self) -> Option<PhysFrame> {
+        // Exhausted pool: answer in O(1) instead of scanning the whole bitmap
+        // (twice, with the wraparound retry).
+        if self.free_frames == 0 {
+            return None;
+        }
+
         let bit_index = self.find_free_from(self.next_hint).or_else(|| {
             // If the hint missed, search from the beginning.
             if self.next_hint > 0 {
@@ -903,7 +925,7 @@ impl<const WORDS: usize> BitmapFrameAllocator<WORDS> {
         }
 
         let start_word = start_pfn / 64;
-        let end_word = (end_pfn + 63) / 64;
+        let end_word = end_pfn.div_ceil(64);
 
         for word in start_word..end_word.min(WORDS) {
             let bit_lo = if word == start_word {
@@ -911,7 +933,7 @@ impl<const WORDS: usize> BitmapFrameAllocator<WORDS> {
             } else {
                 0
             };
-            let bit_hi = if word + 1 == end_word && end_pfn % 64 != 0 {
+            let bit_hi = if word + 1 == end_word && !end_pfn.is_multiple_of(64) {
                 end_pfn % 64
             } else {
                 64
@@ -984,8 +1006,7 @@ mod tests {
     fn max_memory_descriptors_fits_real_hardware() {
         // OVMF produces ~40 entries; real hardware rarely exceeds 128.
         // 256 must remain the upper bound so the struct fits in a static.
-        assert_eq!(MAX_MEMORY_DESCRIPTORS, 256);
-        assert!(MAX_MEMORY_DESCRIPTORS >= 128);
+        const { assert!(MAX_MEMORY_DESCRIPTORS == 256) };
     }
 
     // -----------------------------------------------------------------------
@@ -1664,7 +1685,7 @@ mod tests {
             let frame = alloc.allocate().unwrap();
             let addr = frame.start_address();
             assert!(
-                addr >= 0x2000 && addr < 0x6000,
+                (0x2000..0x6000).contains(&addr),
                 "frame address {:#x} outside usable region [0x2000, 0x6000)",
                 addr
             );
@@ -1698,6 +1719,33 @@ mod tests {
         let mut alloc = TestAlloc::new();
         alloc.init_from_memory_map_below(&parsed, 0x10_0000);
         assert_eq!(alloc.free_frames(), 3);
+    }
+
+    #[test]
+    fn init_below_unaligned_limit_includes_frame_containing_limit() {
+        // The frame based at 0x2000 lies below 0x2001, so it must be freed.
+        let raw_map = make_map(&[make_desc(memory_type::CONVENTIONAL, 0x1000, 4)]);
+        let parsed = MemoryMap::parse(&raw_map).unwrap();
+        let mut alloc = TestAlloc::new();
+        alloc.init_from_memory_map_below(&parsed, 0x2001);
+        assert_eq!(alloc.free_frames(), 2); // frames 0x1000 and 0x2000
+    }
+
+    #[test]
+    fn init_below_aligned_limit_excludes_frame_at_limit() {
+        let raw_map = make_map(&[make_desc(memory_type::CONVENTIONAL, 0x1000, 4)]);
+        let parsed = MemoryMap::parse(&raw_map).unwrap();
+        let mut alloc = TestAlloc::new();
+        alloc.init_from_memory_map_below(&parsed, 0x2000);
+        assert_eq!(alloc.free_frames(), 1); // only frame 0x1000
+    }
+
+    #[test]
+    fn allocate_returns_none_when_exhausted() {
+        let (mut alloc, _) = make_allocator_with_map(&[(memory_type::CONVENTIONAL, 0x1000, 1)]);
+        assert!(alloc.allocate().is_some());
+        assert!(alloc.allocate().is_none());
+        assert_eq!(alloc.free_frames(), 0);
     }
 
     #[test]
