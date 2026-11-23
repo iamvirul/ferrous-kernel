@@ -121,23 +121,50 @@ global_asm!(
         // So 80 bytes is a multiple of 16. The stack is 16-byte aligned!
         // We can just call.
         call syscall_dispatcher
-        
-        // 7. Cleanup arguments
-        add rsp, 56
-        
-        // 8. Restore SYSRET state
-        pop rcx          // user RIP
+
+        // 7. Validate the saved user RIP while still on the kernel stack.
+        //    SYSRET with a non-canonical RCX raises #GP at CPL 0 *after* RSP
+        //    is already the user stack (CVE-2012-0217 class). A user can
+        //    trigger this by executing SYSCALL at the top of the lower half,
+        //    so the next RIP is 0x0000_8000_0000_0000. User addresses are
+        //    canonical iff bits 63:47 are all zero. RAX is free as scratch
+        //    here; it is reloaded from the saved frame below.
+        mov rax, [rsp + 56]
+        shr rax, 47
+        jnz 2f
+
+        // 8. Restore every caller-saved register the dispatcher may have
+        //    clobbered, so no kernel values leak to user space. Callee-saved
+        //    registers (RBX, RBP, R12-R15) are preserved by the sysv64 ABI.
+        //    RAX carries the dispatcher's result (SyscallArgs::rax).
+        pop rdi
+        pop rsi
+        pop rdx
+        pop r10
+        pop r8
+        pop r9
+        pop rax
+
+        // 9. Restore SYSRET state
+        pop rcx          // user RIP (validated canonical above)
         pop r11          // user RFLAGS
         pop gs:[8]       // user RSP
-        
-        // 9. Switch back to user stack
+
+        // 10. Switch back to user stack
         mov rsp, gs:[8]
-        
-        // 10. Swap GS back to user GS
+
+        // 11. Swap GS back to user GS
         swapgs
-        
-        // 11. Return to user space
+
+        // 12. Return to user space
         sysretq
+
+    2:
+        // Non-canonical return RIP: never reach SYSRET. RSP is still the
+        // 16-byte-aligned kernel stack from the dispatcher call above.
+        mov rdi, [rsp + 56]
+        call syscall_reject_noncanonical_return
+        ud2
     "#
 );
 
@@ -163,16 +190,47 @@ pub struct SyscallArgs {
 /// compiled for `x86_64-unknown-uefi` (linked into the boot image), where
 /// `extern "C"` is Win64 and would read the argument from RCX — which holds
 /// the user RIP at that point.
+///
+/// On return, `args.rax` is placed in the user's RAX (the syscall result);
+/// every other argument register is restored to its value at entry.
+///
+/// Phase 2.1.4 placeholder: only the two smoke-test syscall numbers are
+/// recognised. The real dispatch table arrives with Phase 2.1.5.
 #[no_mangle]
 extern "sysv64" fn syscall_dispatcher(args: &mut SyscallArgs) {
-    // Phase 2.1.4 syscall handler.
-    // Print confirmation and return; the SYSRET in the asm stub will carry
-    // execution back to user space (the hlt loop in the user stub).
     let serial = crate::drivers::serial::SerialPort::new();
-    serial.write_str("\r\n[PASS] Syscall received from Ring 3!\r\n");
+    args.rax = match args.rax {
+        SMOKE_SYSCALL_ENTER => {
+            serial.write_str("\r\n[PASS] Syscall received from Ring 3!\r\n");
+            SYSCALL_OK
+        }
+        SMOKE_SYSCALL_AFTER_SYSRET => {
+            // Only reachable if the first SYSRET resumed user code.
+            serial.write_str("[PASS] Ring 3 resumed after SYSRET\r\n");
+            SYSCALL_OK
+        }
+        _ => SYSCALL_ENOSYS,
+    };
+}
 
-    // Silence the unused-variable warning while args is not yet decoded.
-    let _ = args;
+/// Smoke-test syscall number: first entry from ring 3.
+pub const SMOKE_SYSCALL_ENTER: u64 = 1;
+/// Smoke-test syscall number: issued by user code after the first SYSRET.
+pub const SMOKE_SYSCALL_AFTER_SYSRET: u64 = 2;
+/// Syscall result: success.
+const SYSCALL_OK: u64 = 0;
+/// Syscall result: unknown syscall number (`u64::MAX`, i.e. -1).
+const SYSCALL_ENOSYS: u64 = u64::MAX;
+
+/// Called from `syscall_entry` when the saved user RIP is non-canonical.
+///
+/// SYSRET cannot safely return there (it would #GP in ring 0 on the user
+/// stack). There is no task termination yet, so fail fast and visibly; once
+/// process teardown exists (Phase 2.2+) this should kill the offending task
+/// instead of the kernel.
+#[no_mangle]
+extern "sysv64" fn syscall_reject_noncanonical_return(user_rip: u64) -> ! {
+    panic!("syscall: refusing SYSRET to non-canonical user RIP {user_rip:#x}");
 }
 
 // ---------------------------------------------------------------------------
