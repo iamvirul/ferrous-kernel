@@ -1856,8 +1856,11 @@ unsafe fn kernel_user_mode_smoke_test() {
     // Point TSS.RSP0 at the current kernel stack so that hardware will restore
     // it on privilege changes triggered by exceptions in ring-3.
     // We capture RSP here (still a valid kernel stack pointer).
+    // Rounded down to 16 bytes: the SYSCALL stub's push count assumes an
+    // aligned kernel stack so `call syscall_dispatcher` meets the SysV ABI.
     let kernel_rsp: u64;
     core::arch::asm!("mov {}, rsp", out(reg) kernel_rsp, options(nomem, nostack));
+    let kernel_rsp = kernel_rsp & !0xF;
     #[allow(static_mut_refs)]
     {
         x86_64::gdt::TSS.rsp0 = kernel_rsp;
@@ -1914,15 +1917,16 @@ unsafe fn kernel_user_mode_smoke_test() {
     //
     // The stub (x86-64 machine code):
     //   syscall       ; 0F 05 — enters ring 0 via SYSCALL
-    //   hlt           ; F4   — halts the CPU when returned to ring 3 via SYSRET
-    //   jmp $ - 1     ; EB FE — infinite loop in case HLT is resumed by an interrupt
+    //   pause         ; F3 90 — spin-loop hint after SYSRET returns to ring 3
+    //   jmp $ - 2     ; EB FC — back to `pause`, forever
     //
-    // (In practice QEMU never delivers an external interrupt here because we
-    //  clear IF in the SFMASK; this JMP is just a safety net.)
+    // HLT cannot be used here: it is privileged, so executing it at CPL=3
+    // raises #GP immediately after a successful round trip. The verify
+    // script's timeout ends the run.
     const USER_STUB: &[u8] = &[
         0x0F, 0x05, // syscall
-        0xF4, // hlt
-        0xEB, 0xFE, // jmp -2 (loop forever)
+        0xF3, 0x90, // pause
+        0xEB, 0xFC, // jmp -4 (back to pause)
     ];
     // Translate the user VA to get the physical address (= identity-map VA).
     let code_pa = aspace
@@ -1951,7 +1955,7 @@ unsafe fn kernel_user_mode_smoke_test() {
     x86_64::syscall::jump_to_user_mode(USER_CODE_VA, user_rsp);
     // jump_to_user_mode() is `-> !` so we never reach here.
     // The SYSCALL handler (syscall_dispatcher) will print [PASS] and SYSRET.
-    // After SYSRET the user stub executes HLT → QEMU halts the vCPU.
+    // After SYSRET the user stub spins in a ring-3 pause loop.
 }
 
 // ---------------------------------------------------------------------------
