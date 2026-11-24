@@ -1804,6 +1804,20 @@ extern "sysv64" fn kernel_main(boot_info: &'static KernelBootInfo) -> ! {
             ferrous_kernel::sched::smoke_test();
             serial_write_str("[OK] Run queue smoke test complete\r\n");
 
+            // Phase 2.2.3 — context switching (also before Step 17).
+            serial_write_str("\r\n[...] Context switch smoke test (Phase 2.2.3)\r\n");
+            // SAFETY: boot context, single CPU, kernel page tables active,
+            // frame allocator initialised above; called exactly once; RSP is
+            // within [stack_bottom, stack_top) (KERNEL_STACK, Step 1).
+            // The boot task is described by the kernel stack we are on.
+            unsafe {
+                ferrous_kernel::sched::switch_smoke_test(
+                    stack_bottom as *mut u8,
+                    stack_top as *mut u8,
+                )
+            };
+            serial_write_str("[OK] Context switch smoke test complete\r\n");
+
             // ---------------------------------------------------------------
             // Step 17: Kernel / User Mode Transition smoke test (Phase 2.1.4)
             //
