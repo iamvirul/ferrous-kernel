@@ -153,7 +153,7 @@ Every milestone must advance these core goals:
 |-----|-------|--------|
 | ADR-0002 | [Kernel and User Mode Transition Mechanism](adr/ADR-0002-kernel-user-mode-transition.md) | Accepted |
 | ADR-0003 | Process Model and Task Representation | Proposed |
-| ADR-0004 | [Scheduler Algorithm and Run Queue](adr/ADR-0004-scheduler-algorithm.md) | Proposed |
+| ADR-0004 | [Scheduler Algorithm and Run Queue](adr/ADR-0004-scheduler-algorithm.md) | Accepted |
 | ADR-0005 | Capability System Data Structures | Proposed |
 | ADR-0006 | IPC Mechanism Design | Proposed |
 | ADR-0007 | [System Call ABI and Dispatch](adr/ADR-0007-system-call-abi-and-dispatch.md) | Accepted |
@@ -178,7 +178,7 @@ Every milestone must advance these core goals:
 | Task | Issue | Status | Priority |
 |------|-------|--------|----------|
 | 2.2.1 Runnable Task Queue | #71 | Complete | Critical |
-| 2.2.2 Basic Round-Robin Scheduler | #73 | Not Started | Critical |
+| 2.2.2 Basic Round-Robin Scheduler | #73 | In Progress (scheduler done, ADR-0004; live timer preemption lands with #75) | Critical |
 | 2.2.3 Context Switching (assembly + Rust) | #72 | Complete (ADR-0008) | Critical |
 | 2.2.4 Timer Interrupts (PIT/APIC) | #75 | Not Started | High |
 | 2.2.5 Idle Task | #74 | Not Started | High |

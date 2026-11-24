@@ -9,6 +9,7 @@
 //! | Item | Purpose |
 //! |------|---------|
 //! | [`RunQueue`] | FIFO of runnable task handles, fixed capacity, no heap |
+//! | [`RoundRobin`] | Round-robin scheduling policy over a `RunQueue` (ADR-0004) |
 
 #![no_std]
 #![warn(missing_docs)]
@@ -16,6 +17,10 @@
 // `#[test]` needs the std harness on the host; the crate itself stays no_std.
 #[cfg(test)]
 extern crate std;
+
+mod round_robin;
+
+pub use round_robin::{RoundRobin, Switch, SwitchReason};
 
 /// Errors returned by [`RunQueue::enqueue`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -114,6 +119,31 @@ impl<T: Copy + Eq, const N: usize> RunQueue<T, N> {
         if self.contains(item) {
             return Err(RunQueueError::AlreadyQueued);
         }
+        if self.is_full() {
+            return Err(RunQueueError::Full);
+        }
+        let tail = self.physical(self.len);
+        self.slots[tail] = Some(item);
+        self.len += 1;
+        Ok(())
+    }
+
+    /// Add `item` to the back, for callers that **know** it is not queued
+    /// (the scheduler re-queueing the task that was just running, which by
+    /// the queued-XOR-running invariant cannot be in the queue).
+    ///
+    /// O(1): it skips the O(len) duplicate scan of [`enqueue`](Self::enqueue).
+    /// Debug builds still assert absence, so a broken invariant fails loudly
+    /// in testing.
+    ///
+    /// # Errors
+    ///
+    /// [`RunQueueError::Full`] if all `N` slots are in use (queue unchanged).
+    pub fn enqueue_known_absent(&mut self, item: T) -> Result<(), RunQueueError> {
+        debug_assert!(
+            !self.contains(item),
+            "enqueue_known_absent: item is already queued"
+        );
         if self.is_full() {
             return Err(RunQueueError::Full);
         }
@@ -293,6 +323,28 @@ mod tests {
         assert!(q.remove(2));
         assert_eq!(contents(&q), [1, 3, 4]);
         assert_eq!(q.len(), 3);
+    }
+
+    #[test]
+    fn enqueue_known_absent_appends_in_fifo_order() {
+        let mut q = queue_of(&[1]);
+        q.enqueue_known_absent(2).unwrap();
+        assert_eq!(contents(&q), [1, 2]);
+    }
+
+    #[test]
+    fn enqueue_known_absent_reports_full() {
+        let mut q = queue_of(&[1, 2, 3, 4]);
+        assert_eq!(q.enqueue_known_absent(5), Err(RunQueueError::Full));
+        assert_eq!(contents(&q), [1, 2, 3, 4]);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "already queued")]
+    fn enqueue_known_absent_asserts_absence_in_debug() {
+        let mut q = queue_of(&[1]);
+        let _ = q.enqueue_known_absent(1);
     }
 
     #[test]

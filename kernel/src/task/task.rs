@@ -1,6 +1,6 @@
 //! Task Control Block and related types (Phase 2.1.1).
 
-use core::sync::atomic::{AtomicU8, Ordering};
+use core::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 
 use super::ProcessId;
 
@@ -301,6 +301,9 @@ pub struct TaskControlBlock {
     /// Crate-private: safe code outside the kernel must not be able to
     /// corrupt a resumable state.
     pub(crate) fpu: FpuState,
+    /// Timer ticks this task has spent running (charged by
+    /// `sched::scheduler_tick`), for observability (ADR-0004 §3).
+    cpu_ticks: AtomicU64,
 }
 
 // SAFETY: `stack_top` and `stack_bottom` are never dereferenced through the
@@ -367,6 +370,7 @@ impl TaskControlBlock {
             owner_pid,
             page_table_root,
             fpu: FpuState::initial(),
+            cpu_ticks: AtomicU64::new(0),
         }
     }
 
@@ -416,6 +420,16 @@ impl TaskControlBlock {
     /// Physical address of the PML4 this task runs under (its CR3 value).
     pub fn page_table_root(&self) -> u64 {
         self.page_table_root
+    }
+
+    /// Timer ticks this task has spent running.
+    pub fn cpu_ticks(&self) -> u64 {
+        self.cpu_ticks.load(Ordering::Relaxed)
+    }
+
+    /// Charge one timer tick to this task (scheduler only).
+    pub(crate) fn charge_tick(&self) {
+        self.cpu_ticks.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Return the stack size in bytes.

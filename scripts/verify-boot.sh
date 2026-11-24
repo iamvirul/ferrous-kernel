@@ -251,6 +251,14 @@ EXPECTED_STRINGS=(
     "[OK] 20.5) interrupt scopes balanced across all switches"
     "[OK] Context switch smoke test complete"
 
+    # Phase 2.2.2 — round-robin scheduler (also before Step 17)
+    "Scheduler smoke test (Phase 2.2.2)"
+    "[OK] 21.1) round-robin: 3 tasks x 3 yields in strict FIFO order (ABCABCABC)"
+    "[OK] 21.2) time slice: preempted after exactly 10 ticks; 20 ticks charged per task"
+    "[OK] 21.3) idle: ran only when the queue was empty (once per scenario)"
+    "[OK] 21.4) block/wake/exit verified; a lone yield performs no context switch"
+    "[OK] Scheduler smoke test complete"
+
     # Phase 2.1.4 — Kernel / User Mode Transition
     "Kernel/user mode transition smoke test (Phase 2.1.4)"
     "[OK] 17.1) GDT + TSS loaded (DPL=3 segments active)"

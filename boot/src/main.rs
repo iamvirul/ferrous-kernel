@@ -1818,6 +1818,21 @@ extern "sysv64" fn kernel_main(boot_info: &'static KernelBootInfo) -> ! {
             };
             serial_write_str("[OK] Context switch smoke test complete\r\n");
 
+            // Phase 2.2.2 — round-robin scheduler (also before Step 17). It
+            // leaves the scheduler running with only the boot task runnable,
+            // so Step 18's sys_yield returns immediately.
+            serial_write_str("\r\n[...] Scheduler smoke test (Phase 2.2.2)\r\n");
+            // SAFETY: boot context, single CPU, kernel page tables active,
+            // interrupts off; called exactly once; RSP is within
+            // [stack_bottom, stack_top) (KERNEL_STACK, Step 1).
+            unsafe {
+                ferrous_kernel::sched::scheduler_smoke_test(
+                    stack_bottom as *mut u8,
+                    stack_top as *mut u8,
+                )
+            };
+            serial_write_str("[OK] Scheduler smoke test complete\r\n");
+
             // ---------------------------------------------------------------
             // Step 17: Kernel / User Mode Transition smoke test (Phase 2.1.4)
             //

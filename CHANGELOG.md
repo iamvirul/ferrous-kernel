@@ -189,6 +189,43 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Still outstanding: AVX/XSAVE state (not enabled), and system-wide
   interrupt enabling (needs PIC/APIC setup, #75)
 
+#### Phase 2.2.2 - Round-Robin Scheduler (ADR-0004)
+- `ferrous_sched::RoundRobin<T, N>`: a pure, host-tested policy.
+  Single-CPU, single-priority, strict FIFO, with a fixed slice. It offers
+  `admit`, `tick` (sets `need_resched` when the slice runs out),
+  `switch(Yield | Preempt | Block | Exit)` and `remove`. The idle task is
+  never queued; it runs only when the queue is empty. When work arrives, a
+  wake or the next tick only *requests* a reschedule (`need_resched`).
+  Idle gives up the CPU at the next safe point (`preempt_if_needed`) or
+  yield, since neither `wake` nor `tick` switches. 20 policy tests, including a
+  20,000-operation invariant stress test
+- `RunQueue::enqueue_known_absent`: O(1) re-queue for the scheduler hot
+  path. The duplicate scan is kept as a debug assertion
+- `kernel::sched::scheduler`:
+  - A static 64-slot task table (`TaskId` = slot index, so TCBs never
+    move), with `init`, `spawn` and caller-provided 16 KiB
+    `KernelStack`s
+  - `schedule()` decides under the scheduler lock, releases it, then
+    calls `switch_to` (the ADR-0008 depth-1 contract)
+  - Entry points: `yield_now`, `block_current` / `wake`, `exit_current`
+  - Timer interface for #75: `scheduler_tick()` (ISR hook; charges CPU
+    time and never switches) plus the `preempt_if_needed()` safe point
+  - Observability: `cpu_ticks(id)`, `context_switch_count()`,
+    `runnable_count()`
+- `TaskControlBlock::cpu_ticks` / `charge_tick`
+- `sys_yield` now calls the scheduler
+- Boot smoke test 21.1–21.4:
+  - three tasks interleave in strict FIFO order (`ABCABCABC`);
+  - two busy tasks driving the tick hook are preempted after exactly
+    `TIME_SLICE_TICKS` ticks, with 20 ticks charged to each;
+  - idle runs only with an empty queue;
+  - block, wake and exit work, and a lone yield performs no switch.
+  Mutation-tested: an uncharged tick, an off-by-one slice, a lock held
+  across the switch, and a yield that is not re-queued are each caught
+- Pending #75: live timer preemption (the ISR calls `scheduler_tick` and
+  then `preempt_if_needed`). Pending #74: the production idle body (HLT
+  with interrupts enabled)
+
 #### Documentation and Tooling
 - README badges: CI, Release, CodeQL, latest release version, license,
   Rust language, and architecture
