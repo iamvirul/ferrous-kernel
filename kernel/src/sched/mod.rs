@@ -20,9 +20,11 @@
 //!   has stopped running may be requeued as usual.
 
 pub mod scheduler;
+mod scheduler_smoke;
 pub mod switch;
 mod switch_smoke;
 
+pub use scheduler_smoke::smoke_test as scheduler_smoke_test;
 pub use switch_smoke::smoke_test as switch_smoke_test;
 
 use crate::sync::IrqSpinLock;
