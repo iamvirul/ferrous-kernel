@@ -430,6 +430,17 @@ pub fn active_pml4_phys() -> u64 {
     cr3 & flags::PHYS_ADDR_MASK
 }
 
+/// Load `pml4_phys` into CR3, making it the active address space (and
+/// flushing non-global TLB entries).
+///
+/// # Safety
+///
+/// `pml4_phys` must be a valid PML4 that maps the currently executing code,
+/// the current stack, and all kernel data identically to the current root.
+pub unsafe fn load_page_table_root(pml4_phys: u64) {
+    core::arch::asm!("mov cr3, {}", in(reg) pml4_phys, options(nostack, preserves_flags));
+}
+
 /// Returns `true` iff ring 3 may read `virt` under the page tables rooted at
 /// `pml4_phys`.
 ///
