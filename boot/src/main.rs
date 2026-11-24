@@ -1798,6 +1798,12 @@ extern "sysv64" fn kernel_main(boot_info: &'static KernelBootInfo) -> ! {
             unsafe { ferrous_kernel::task::elf::smoke_test() };
             serial_write_str("[OK] ELF loader smoke test complete\r\n");
 
+            // Phase 2.2.1 — run queue. Must run before Step 17: the ring-3
+            // test there never returns to this boot path.
+            serial_write_str("\r\n[...] Run queue smoke test (Phase 2.2.1)\r\n");
+            ferrous_kernel::sched::smoke_test();
+            serial_write_str("[OK] Run queue smoke test complete\r\n");
+
             // ---------------------------------------------------------------
             // Step 17: Kernel / User Mode Transition smoke test (Phase 2.1.4)
             //

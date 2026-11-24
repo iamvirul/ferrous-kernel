@@ -8,6 +8,7 @@
 //!
 //! | Module | Contents |
 //! |--------|----------|
+//! | [`irq`] | Interrupt-disable nesting bookkeeping ([`irq::IrqNesting`]) |
 //! | [`macros`] | Kernel assertion and debug macros (`kassert!`, `kassert_eq!`, `kdebug_assert!`, `kunreachable!`, …) |
 //!
 //! # `no_std` guarantee
@@ -20,4 +21,9 @@
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
 
+// `#[test]` needs the std harness on the host; the crate itself stays no_std.
+#[cfg(test)]
+extern crate std;
+
+pub mod irq;
 pub mod macros;
