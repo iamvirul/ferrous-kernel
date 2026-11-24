@@ -157,6 +157,7 @@ Every milestone must advance these core goals:
 | ADR-0005 | Capability System Data Structures | Proposed |
 | ADR-0006 | IPC Mechanism Design | Proposed |
 | ADR-0007 | [System Call ABI and Dispatch](adr/ADR-0007-system-call-abi-and-dispatch.md) | Accepted |
+| ADR-0008 | [Context Switch Mechanism](adr/ADR-0008-context-switch-mechanism.md) | Proposed |
 
 ### Milestones
 
@@ -177,10 +178,10 @@ Every milestone must advance these core goals:
 | Task | Issue | Status | Priority |
 |------|-------|--------|----------|
 | 2.2.1 Runnable Task Queue | #71 | Complete | Critical |
-| 2.2.2 Basic Round-Robin Scheduler | #72 | Not Started | Critical |
-| 2.2.3 Context Switching (assembly + Rust) | #73 | Not Started | Critical |
-| 2.2.4 Timer Interrupts (PIT/APIC) | #74 | Not Started | High |
-| 2.2.5 Idle Task | #75 | Not Started | High |
+| 2.2.2 Basic Round-Robin Scheduler | #73 | Not Started | Critical |
+| 2.2.3 Context Switching (assembly + Rust) | #72 | Not Started | Critical |
+| 2.2.4 Timer Interrupts (PIT/APIC) | #75 | Not Started | High |
+| 2.2.5 Idle Task | #74 | Not Started | High |
 
 **Dependencies:** 2.1.1 (task structures) must be complete.
 
