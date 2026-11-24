@@ -125,6 +125,11 @@ fn test_idle() -> ! {
 }
 
 const RR_ROUNDS: usize = 3;
+/// Context switches in 21.1: boot->first worker, one per yield
+/// (3 tasks x RR_ROUNDS), one per exit (3), and idle->boot.
+const RR_EXPECTED_SWITCHES: u64 = 1 + 3 * RR_ROUNDS as u64 + 3 + 1;
+/// Context switches in 21.2 (derivation at the assertion).
+const SLICE_EXPECTED_SWITCHES: u64 = 8;
 
 fn rr_worker(tag: u8) -> ! {
     for _ in 0..RR_ROUNDS {
@@ -203,7 +208,15 @@ pub unsafe fn smoke_test(boot_stack_bottom: *mut u8, boot_stack_top: *mut u8) {
         spawn(rr_b, WORKER_STACKS[1].take()).expect("spawn B"),
         spawn(rr_c, WORKER_STACKS[2].take()).expect("spawn C"),
     ];
+    let switches_before = context_switch_count();
     block_current(); // resumes when idle wakes us
+                     // boot->A, 9 yields, 3 exits, idle->boot. An extra or missing switch
+                     // (e.g. a yield that did not rotate) changes this count.
+    assert_eq!(
+        context_switch_count() - switches_before,
+        RR_EXPECTED_SWITCHES,
+        "round-robin made the wrong number of context switches"
+    );
     let len = take_events(&mut log);
     assert_eq!(&log[..len], b"ABCABCABCI", "round-robin order");
     for id in ids {
@@ -220,7 +233,18 @@ pub unsafe fn smoke_test(boot_stack_bottom: *mut u8, boot_stack_top: *mut u8) {
     // 21.2: time-slice preemption driven by the tick hook.
     let p = spawn(busy_p, WORKER_STACKS[3].take()).expect("spawn P");
     let q = spawn(busy_q, WORKER_STACKS[4].take()).expect("spawn Q");
+    let switches_before = context_switch_count();
     block_current();
+    // boot->P, P->Q, Q->P, P->Q (four slice ends), Q->P (Q's second slice
+    // end), P exits->Q, Q exits->idle, idle->boot. If Q missed its final
+    // preemption it would simply exit (cpu_ticks already 20), giving the
+    // same event runs and tick totals but only 7 switches, so this count is
+    // what proves every slice end was enforced.
+    assert_eq!(
+        context_switch_count() - switches_before,
+        SLICE_EXPECTED_SWITCHES,
+        "time-slice scenario made the wrong number of context switches"
+    );
     let len = take_events(&mut log);
     let n = runs(&log[..len], &mut run);
     let slice = TIME_SLICE_TICKS as usize;
