@@ -1,6 +1,6 @@
 # ADR-0008: Context Switch Mechanism
 
-**Status:** Proposed  
+**Status:** Accepted  
 **Date:** 2026-11-24  
 **Deciders:** iamvirul  
 **Tags:** phase-2, scheduler, context-switch, assembly, security
@@ -297,3 +297,4 @@ later phase.
 ## Status History
 
 - 2026-11-24: Created (Status: Proposed); to be accepted before the Phase 2.2.3 implementation (#72) lands
+- 2026-11-24: Accepted (PR #169). Implemented in `kernel/src/arch/x86_64/context.rs` and `kernel/src/sched/switch.rs`; validated in QEMU by boot checks 20.1–20.3 (ping-pong, callee-saved sentinels, CR3 between two address spaces), each also mutation-tested
