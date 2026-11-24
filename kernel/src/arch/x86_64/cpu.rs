@@ -1,5 +1,10 @@
 //! CPU Local Storage for x86-64.
 
+use core::cell::UnsafeCell;
+use core::marker::PhantomData;
+
+use ferrous_core::irq::IrqNesting;
+
 /// Per-CPU local data structure.
 ///
 /// In 64-bit mode, the `GS` segment register is typically used to point to
@@ -74,23 +79,19 @@ pub fn halt_forever() -> ! {
 /// RFLAGS.IF — interrupt enable flag (bit 9).
 const RFLAGS_IF: u64 = 1 << 9;
 
-/// Interrupt-enable state captured by [`save_and_disable_interrupts`].
+/// This CPU's interrupt-disable nesting state.
 ///
-/// Pass it back to [`restore_interrupts`] to undo exactly that disable,
-/// which makes nested critical sections compose: an inner restore never
-/// re-enables interrupts that an outer section disabled.
-#[must_use = "dropping the saved state leaves interrupts disabled"]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SavedInterruptState {
-    enabled: bool,
-}
+/// Single CPU in Phase 2, so one instance. It moves into `CpuLocal` with SMP.
+struct CpuIrqState(UnsafeCell<IrqNesting>);
 
-impl SavedInterruptState {
-    /// `true` if interrupts were enabled when the state was saved.
-    pub const fn were_enabled(self) -> bool {
-        self.enabled
-    }
-}
+// SAFETY: the inner `IrqNesting` is only read or written by
+// `disable_interrupts` and `InterruptGuard::drop`, and both do so with
+// interrupts disabled on the only CPU. No IRQ handler can interleave. NMI
+// handlers never touch it: by `IrqSpinLock`'s rules they take no locks,
+// and nothing else uses this state.
+unsafe impl Sync for CpuIrqState {}
+
+static CPU_IRQ_STATE: CpuIrqState = CpuIrqState(UnsafeCell::new(IrqNesting::new()));
 
 /// `true` if maskable interrupts are currently enabled (RFLAGS.IF set).
 pub fn interrupts_enabled() -> bool {
@@ -104,32 +105,62 @@ pub fn interrupts_enabled() -> bool {
     rflags & RFLAGS_IF != 0
 }
 
-/// Disable maskable interrupts and return the previous state.
+/// Number of [`InterruptGuard`]s currently alive on this CPU.
+pub fn irq_disable_depth() -> usize {
+    let _scope = disable_interrupts();
+    // SAFETY: read with interrupts disabled (see `CpuIrqState`). The guard
+    // above accounts for itself, hence the `- 1`.
+    unsafe { (*CPU_IRQ_STATE.0.get()).depth() - 1 }
+}
+
+/// Disable maskable interrupts until the returned guard and every other
+/// live guard are dropped.
+///
+/// Guards may be dropped in any order. Interrupts are re-enabled only when
+/// the *last* one goes, and only if they were enabled before the *first*
+/// one (see `ferrous_core::irq`). An out-of-order release can therefore
+/// never re-enable interrupts while another critical section is active.
 ///
 /// Not `nomem`: the `cli` must also act as a compiler barrier, so memory
 /// accesses of the critical section cannot be hoisted above it.
-pub fn save_and_disable_interrupts() -> SavedInterruptState {
-    let rflags: u64;
-    // SAFETY: at CPL 0, `pushfq; pop; cli` reads RFLAGS (one transient stack
-    // slot) and clears IF. Clearing IF cannot break any invariant: it only
-    // defers maskable interrupts until `restore_interrupts`.
-    unsafe {
-        core::arch::asm!("pushfq", "pop {}", "cli", out(reg) rflags);
-    }
-    SavedInterruptState {
-        enabled: rflags & RFLAGS_IF != 0,
+pub fn disable_interrupts() -> InterruptGuard {
+    let enabled_before = interrupts_enabled();
+    // SAFETY: at CPL 0, `cli` only defers maskable interrupts until the
+    // matching guard drop. It cannot break any invariant.
+    unsafe { core::arch::asm!("cli", options(nostack)) };
+    // An IRQ between the read above and the `cli` runs to completion,
+    // balanced, before we continue, so `enabled_before` is still accurate.
+    // SAFETY: interrupts are now disabled (see `CpuIrqState`).
+    unsafe { (*CPU_IRQ_STATE.0.get()).enter(enabled_before) };
+    InterruptGuard {
+        _not_send: PhantomData,
     }
 }
 
-/// Undo a [`save_and_disable_interrupts`]: re-enable interrupts only if
-/// they were enabled when `saved` was captured.
+/// Proof that maskable interrupts are disabled on this CPU (RAII).
 ///
-/// Not `nomem`, for the same compiler-barrier reason as the disable.
-pub fn restore_interrupts(saved: SavedInterruptState) {
-    if saved.enabled {
-        // SAFETY: interrupts were enabled before the matching save, so
-        // re-enabling them restores the caller's original state. The IDT is
-        // installed long before any lock can be taken.
-        unsafe { core::arch::asm!("sti", options(nostack)) };
+/// Created by [`disable_interrupts`]. Dropping it ends its scope.
+#[must_use = "dropping the guard immediately ends the interrupt-disabled scope"]
+pub struct InterruptGuard {
+    // Tied to this CPU's interrupt state, so it must not move to another
+    // context (`*const ()` makes it !Send and !Sync).
+    _not_send: PhantomData<*const ()>,
+}
+
+impl Drop for InterruptGuard {
+    fn drop(&mut self) {
+        debug_assert!(
+            !interrupts_enabled(),
+            "IF was set while an InterruptGuard was alive"
+        );
+        // SAFETY: interrupts are still disabled: this scope is active, and
+        // only the last exit re-enables them, below.
+        let reenable = unsafe { (*CPU_IRQ_STATE.0.get()).exit() };
+        if reenable {
+            // SAFETY: this was the last active scope, and interrupts were
+            // enabled before the first one, so this restores the original
+            // state. Not `nomem`, so it acts as a compiler barrier.
+            unsafe { core::arch::asm!("sti", options(nostack)) };
+        }
     }
 }

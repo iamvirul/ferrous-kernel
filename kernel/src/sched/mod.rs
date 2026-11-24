@@ -40,9 +40,10 @@ pub type SharedRunQueue = IrqSpinLock<RunQueue>;
 ///
 /// On any failed check: this is a boot-time self-test.
 pub fn smoke_test() {
-    use crate::arch::x86_64::cpu::interrupts_enabled;
+    use crate::arch::x86_64::cpu::{interrupts_enabled, irq_disable_depth};
 
     static QUEUE: SharedRunQueue = IrqSpinLock::new(RunQueue::new());
+    static OTHER: IrqSpinLock<u8> = IrqSpinLock::new(0);
 
     log::info!("Run queue smoke test (Phase 2.2.1)");
 
@@ -60,7 +61,24 @@ pub fn smoke_test() {
     }
     assert_eq!(interrupts_enabled(), if_before, "lock must restore IF");
     assert!(!QUEUE.is_locked());
+
+    // Out-of-order release of two locks: dropping the outer guard first must
+    // not end the interrupt-disabled scope while the inner lock is held.
+    let depth_before = irq_disable_depth();
+    let outer = QUEUE.lock();
+    let inner = OTHER.lock();
+    assert_eq!(irq_disable_depth(), depth_before + 2);
+    drop(outer);
+    assert_eq!(irq_disable_depth(), depth_before + 1);
+    assert!(
+        !interrupts_enabled(),
+        "IRQs must stay off: inner lock still held"
+    );
+    drop(inner);
+    assert_eq!(irq_disable_depth(), depth_before);
+    assert_eq!(interrupts_enabled(), if_before, "last release restores IF");
     log::info!("[OK] 19.1) IrqSpinLock: exclusive, IRQs masked while held, IF restored");
+    log::info!("[OK] 19.1) IrqSpinLock: out-of-order release keeps IRQs masked until last guard");
 
     let mut queue = QUEUE.lock();
     let (a, b, c) = (TaskId::new(1), TaskId::new(2), TaskId::new(3));

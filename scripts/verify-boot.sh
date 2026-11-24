@@ -235,6 +235,7 @@ EXPECTED_STRINGS=(
     # Phase 2.2.1 — run queue (runs before Step 17, which never returns)
     "Run queue smoke test (Phase 2.2.1)"
     "[OK] 19.1) IrqSpinLock: exclusive, IRQs masked while held, IF restored"
+    "[OK] 19.1) IrqSpinLock: out-of-order release keeps IRQs masked until last guard"
     "[OK] 19.2) enqueue/dequeue: FIFO order preserved"
     "[OK] 19.3) remove: middle task removed, order of others kept"
     "[OK] 19.4) duplicate rejected; full at 256 tasks rejected"

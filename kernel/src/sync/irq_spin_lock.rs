@@ -15,15 +15,16 @@
 //!   called under it): on one CPU that is an immediate, silent deadlock.
 //! - **NMI handlers must not take an `IrqSpinLock`.** NMIs ignore IF, so
 //!   masking interrupts does not keep them out of the critical section.
+//!
+//! Guards of different locks may be dropped in **any order**. Interrupts
+//! come back on only when the last interrupt-disabled scope on this CPU
+//! ends (see [`disable_interrupts`]), never while another lock is held.
 
 use core::cell::UnsafeCell;
-use core::marker::PhantomData;
 use core::ops::{Deref, DerefMut};
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use crate::arch::x86_64::cpu::{
-    restore_interrupts, save_and_disable_interrupts, SavedInterruptState,
-};
+use crate::arch::x86_64::cpu::{disable_interrupts, InterruptGuard};
 
 /// A mutual-exclusion lock that disables interrupts while held.
 ///
@@ -52,13 +53,13 @@ impl<T> IrqSpinLock<T> {
 
     /// Disable interrupts, then acquire the lock, spinning if needed.
     ///
-    /// Interrupts stay disabled until the returned guard is dropped, which
-    /// restores the interrupt state from *before* this call. Nested locks
-    /// therefore compose correctly.
+    /// Interrupts stay disabled at least until the returned guard is
+    /// dropped, and longer if other interrupt-disabled scopes are still
+    /// active.
     pub fn lock(&self) -> IrqSpinLockGuard<'_, T> {
         // Disable first: once the flag is held, no interrupt on this CPU may
         // run code that could try to take the same lock.
-        let saved = save_and_disable_interrupts();
+        let irq = disable_interrupts();
         while self
             .locked
             .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
@@ -71,8 +72,7 @@ impl<T> IrqSpinLock<T> {
         }
         IrqSpinLockGuard {
             lock: self,
-            saved,
-            _not_send: PhantomData,
+            _irq: irq,
         }
     }
 
@@ -80,7 +80,7 @@ impl<T> IrqSpinLock<T> {
     ///
     /// On failure the interrupt state is left exactly as it was.
     pub fn try_lock(&self) -> Option<IrqSpinLockGuard<'_, T>> {
-        let saved = save_and_disable_interrupts();
+        let irq = disable_interrupts();
         if self
             .locked
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
@@ -88,11 +88,10 @@ impl<T> IrqSpinLock<T> {
         {
             Some(IrqSpinLockGuard {
                 lock: self,
-                saved,
-                _not_send: PhantomData,
+                _irq: irq,
             })
         } else {
-            restore_interrupts(saved);
+            // Dropping `irq` here ends the scope it opened.
             None
         }
     }
@@ -109,10 +108,10 @@ impl<T> IrqSpinLock<T> {
 #[must_use = "dropping the guard immediately releases the lock"]
 pub struct IrqSpinLockGuard<'a, T> {
     lock: &'a IrqSpinLock<T>,
-    saved: SavedInterruptState,
-    // The saved interrupt state belongs to this CPU, so the guard must not
-    // migrate to another context (`*const ()` makes it !Send and !Sync).
-    _not_send: PhantomData<*const ()>,
+    // Keeps interrupts disabled while the lock is held. It is a field, so it
+    // is dropped *after* `Drop::drop` releases the flag, which guarantees
+    // the release-then-re-enable order. It also makes the guard !Send.
+    _irq: InterruptGuard,
 }
 
 impl<T> Deref for IrqSpinLockGuard<'_, T> {
@@ -135,9 +134,10 @@ impl<T> DerefMut for IrqSpinLockGuard<'_, T> {
 
 impl<T> Drop for IrqSpinLockGuard<'_, T> {
     fn drop(&mut self) {
-        // Release before re-enabling interrupts. In the other order, an IRQ
-        // landing between the two steps would find the lock still held.
+        // Only release the flag here. The `_irq` field is dropped after this
+        // body returns, so interrupts can come back on (if this was the last
+        // scope) only once the lock is already free. In the other order, an
+        // IRQ landing in between would find the lock still held.
         self.lock.locked.store(false, Ordering::Release);
-        restore_interrupts(self.saved);
     }
 }
