@@ -143,8 +143,41 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   address spaces (each task sees its own value; 4 root changes, 4 loads).
   Mutation-tested: dropping one register restore, skipping the TSS update,
   or skipping the CR3 load each fails the boot
-- Not saved: FPU/SSE state (Phase 3). New tasks run with interrupts off
-  until Phase 2.2.4
+- Eager x87/MMX/SSE switching: each TCB holds a 16-byte-aligned
+  `FpuState` (`FXSAVE` format). `switch_context` runs `fxsave64` first and
+  `fxrstor64` before the stack switch, so no compiler-generated SSE can run
+  in between. New tasks start from `FpuState::initial()` (FNINIT control
+  word, power-on MXCSR). Eager rather than lazy (CR0.TS) avoids LazyFP
+  (CVE-2018-3665)
+- Inherited interrupt scope hand-off: `cpu::end_inherited_interrupt_scope`,
+  called by the new-task trampoline, closes the scope the switching task
+  opened, so the per-CPU nesting count balances across every switch
+- Boot checks 20.4 (xmm0–15 and MXCSR preserved in both directions; new
+  task starts with the clean MXCSR) and 20.5 (nesting depth balanced at
+  every task body, 23 checks). Mutation-tested: dropping `fxsave` or
+  `fxrstor` loses all 18 checked states (mask `0x3ffff`: 16 XMM registers,
+  MXCSR, x87); dropping the hand-off unbalances the nesting count
+- Fixes from an independent second review, each mutation-tested:
+  - `switch_to` also updates `CpuLocal.kernel_stack`, the stack the SYSCALL
+    stub loads. Previously only TSS.RSP0 was updated, so a switched-in task
+    making a syscall would have run on another task's stack
+  - `switch_to(prev: *mut, next: *const, &InterruptGuard)` takes raw
+    pointers, so no `&mut` / `&` to a TCB is held across the suspension
+    (that would be aliasing UB once the scheduler reads `prev` after
+    resuming)
+  - The depth-1 contract: debug builds assert that the switch guard is the
+    only open interrupt scope (holding a lock across a switch would
+    deadlock the new task)
+  - The new-task trampoline checks rsp ≡ 8 (mod 16) and traps (`ud2`) on a
+    mis-built frame
+  - The debug identity-map check now covers both stacks, both TCBs and the
+    switch code
+  - The self-test checks both 64-bit lanes of every XMM register and the
+    x87 stack (a dropped `fxrstor` now reports mask `0x3ffff`)
+- ADR-0008 amended for all of the above. ISR/NMI FPU preservation is
+  recorded as a requirement for #75
+- Still outstanding: AVX/XSAVE state (not enabled), and system-wide
+  interrupt enabling (needs PIC/APIC setup, #75)
 
 #### Documentation and Tooling
 - README badges: CI, Release, CodeQL, latest release version, license,
