@@ -26,7 +26,9 @@ pub mod process;
 pub mod task;
 
 pub use process::{Process, ProcessId, ProcessState, ProcessStateError};
-pub use task::{RegisterState, TaskControlBlock, TaskId, TaskPriority, TaskState, TaskStateError};
+pub use task::{
+    FpuState, RegisterState, TaskControlBlock, TaskId, TaskPriority, TaskState, TaskStateError,
+};
 
 // ---------------------------------------------------------------------------
 // Smoke test (called from boot/src/main.rs Step 14)

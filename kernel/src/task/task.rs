@@ -157,9 +157,10 @@ pub enum TaskPriority {
 ///
 /// # `repr(C)` requirement
 ///
-/// The context-switch assembly stub (Phase 2.2.3) will load and store fields
-/// by their byte offset from the struct base.  **Do not reorder fields**
-/// without updating the assembly accordingly.
+/// The context-switch assembly (`arch::x86_64::context`, ADR-0008) loads and
+/// stores fields by offset. The offsets are taken with `offset_of!` and the
+/// struct size is asserted at compile time, so a reorder is picked up
+/// automatically and an added or removed field fails the build.
 ///
 /// # Field offsets (for reference)
 ///
@@ -200,6 +201,59 @@ pub struct RegisterState {
 // ---------------------------------------------------------------------------
 // TaskControlBlock
 // ---------------------------------------------------------------------------
+
+/// Size of the legacy `FXSAVE` area in bytes.
+const FXSAVE_AREA_SIZE: usize = 512;
+/// Offset of the x87 control word (FCW) in the `FXSAVE` area.
+const FXSAVE_FCW_OFFSET: usize = 0;
+/// Offset of MXCSR in the `FXSAVE` area.
+const FXSAVE_MXCSR_OFFSET: usize = 24;
+/// x87 control word after `FNINIT`: all exceptions masked, 64-bit
+/// precision, round to nearest.
+const DEFAULT_FCW: u16 = 0x037F;
+/// MXCSR power-on value: all SSE exceptions masked, round to nearest.
+const DEFAULT_MXCSR: u32 = 0x1F80;
+
+/// A task's x87 / MMX / SSE register state, in the `FXSAVE` format.
+///
+/// Saved and restored *eagerly* on every context switch (ADR-0008 §5), so
+/// one task's vector registers never leak to, or get clobbered by, another.
+/// `FXSAVE64` / `FXRSTOR64` require 16-byte alignment.
+#[derive(Clone, Copy)]
+#[repr(C, align(16))]
+pub struct FpuState([u8; FXSAVE_AREA_SIZE]);
+
+impl FpuState {
+    /// The state of a freshly initialised FPU: the `FNINIT` control word,
+    /// power-on MXCSR, empty x87 stack, and all registers zero. `FXRSTOR`
+    /// of this image is always valid (no reserved MXCSR bits are set).
+    pub const fn initial() -> Self {
+        let mut area = [0u8; FXSAVE_AREA_SIZE];
+        let fcw = DEFAULT_FCW.to_le_bytes();
+        area[FXSAVE_FCW_OFFSET] = fcw[0];
+        area[FXSAVE_FCW_OFFSET + 1] = fcw[1];
+        let mxcsr = DEFAULT_MXCSR.to_le_bytes();
+        area[FXSAVE_MXCSR_OFFSET] = mxcsr[0];
+        area[FXSAVE_MXCSR_OFFSET + 1] = mxcsr[1];
+        area[FXSAVE_MXCSR_OFFSET + 2] = mxcsr[2];
+        area[FXSAVE_MXCSR_OFFSET + 3] = mxcsr[3];
+        Self(area)
+    }
+
+    /// The saved MXCSR (SSE control/status register).
+    pub fn mxcsr(&self) -> u32 {
+        let b = &self.0[FXSAVE_MXCSR_OFFSET..FXSAVE_MXCSR_OFFSET + 4];
+        u32::from_le_bytes([b[0], b[1], b[2], b[3]])
+    }
+}
+
+impl core::fmt::Debug for FpuState {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("FpuState")
+            .field("mxcsr", &format_args!("{:#x}", self.mxcsr()))
+            .finish_non_exhaustive()
+    }
+}
 
 /// Per-task execution context.
 ///
@@ -243,6 +297,10 @@ pub struct TaskControlBlock {
     /// context switch needs no process lookup (ADR-0008). Kernel-only tasks
     /// use the kernel root.
     page_table_root: u64,
+    /// x87 / SSE state, saved while the task is switched out (ADR-0008 §5).
+    /// Crate-private: safe code outside the kernel must not be able to
+    /// corrupt a resumable state.
+    pub(crate) fpu: FpuState,
 }
 
 // SAFETY: `stack_top` and `stack_bottom` are never dereferenced through the
@@ -304,6 +362,7 @@ impl TaskControlBlock {
             time_slice: Self::DEFAULT_TIME_SLICE,
             owner_pid,
             page_table_root,
+            fpu: FpuState::initial(),
         }
     }
 
