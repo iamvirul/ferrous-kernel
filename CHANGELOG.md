@@ -67,6 +67,30 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `ParseError` enum provides robust error handling for invalid binaries.
 - `elf::smoke_test()` added to test loader parsing and mapping functionality.
 
+#### Phase 2.1.5 - System Call Interface (minimal, ADR-0007)
+- New `ferrous-syscall` crate (`lib/syscall`): host-testable ABI with the
+  typed `SyscallNumber` (0 reserved; `Exit` = 1, `Yield` = 2, `Log` = 3),
+  `SyscallError` (Linux-compatible `EFAULT`/`EINVAL`/`ENOSYS`, returned as
+  `-errno`), `encode_result`, and `UserPtr<T>` (overflow, bounds,
+  alignment, and null checks). 26 unit tests
+- `kernel::syscall::dispatch`: exhaustive `match` on `SyscallNumber`;
+  unknown and reserved numbers return `-ENOSYS`; no heap use, and bounded
+  time on every path
+- `copy_from_user` (`kernel/src/syscall/user_memory.rs`): walks the active
+  page tables and requires `PRESENT | USER` at every level before copying.
+  This rejects lower-half identity-map (supervisor-only) addresses and
+  never page-faults on a bad user pointer
+- `address_space::is_user_readable_in()` and `active_pml4_phys()`.
+  `USER_SPACE_END` now has a single definition in the ABI crate
+- Handlers: `sys_exit` (logs the code, then halts until the scheduler
+  exists), `sys_yield` (returns 0 until Phase 2.2.2), and `sys_log` (≤ 512
+  bytes, UTF-8 validated; arguments are checked in every build, output
+  only in debug builds)
+- Boot Step 18: an assembled, position-independent ring-3 program runs 13
+  syscall checks (success, ENOSYS, EFAULT for kernel/unmapped/overflowing/
+  page-crossing pointers, EINVAL for length and UTF-8) and exits with code
+  0 only if all pass; `verify-boot.sh` requires that exit code
+
 #### Documentation and Tooling
 - README badges: CI, Release, CodeQL, latest release version, license,
   Rust language, and architecture

@@ -1,6 +1,6 @@
 # ADR-0007: System Call ABI and Dispatch
 
-**Status:** Proposed  
+**Status:** Accepted  
 **Date:** 2026-11-24  
 **Deciders:** iamvirul  
 **Tags:** phase-2, syscall, abi, security, user-memory
@@ -235,3 +235,4 @@ latency targets (ROADMAP) are measured in later phases.
 ## Status History
 
 - 2026-11-24: Created (Status: Proposed); to be accepted before the Phase 2.1.5 implementation (#70) lands
+- 2026-11-24: Accepted (PR #166). Implemented in `lib/syscall`, `kernel/src/syscall/`, and `kernel/src/memory/address_space.rs`; validated in QEMU by the Step 18 ring-3 program (13 checks, exit code 0)

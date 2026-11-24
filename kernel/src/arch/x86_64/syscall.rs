@@ -194,33 +194,16 @@ pub struct SyscallArgs {
 /// On return, `args.rax` is placed in the user's RAX (the syscall result);
 /// every other argument register is restored to its value at entry.
 ///
-/// Phase 2.1.4 placeholder: only the two smoke-test syscall numbers are
-/// recognised. The real dispatch table arrives with Phase 2.1.5.
+/// This is the arch glue only: decoding, validation, and handlers live in
+/// the platform-independent [`crate::syscall`] layer.
 #[no_mangle]
 extern "sysv64" fn syscall_dispatcher(args: &mut SyscallArgs) {
-    let serial = crate::drivers::serial::SerialPort::new();
-    args.rax = match args.rax {
-        SMOKE_SYSCALL_ENTER => {
-            serial.write_str("\r\n[PASS] Syscall received from Ring 3!\r\n");
-            SYSCALL_OK
-        }
-        SMOKE_SYSCALL_AFTER_SYSRET => {
-            // Only reachable if the first SYSRET resumed user code.
-            serial.write_str("[PASS] Ring 3 resumed after SYSRET\r\n");
-            SYSCALL_OK
-        }
-        _ => SYSCALL_ENOSYS,
-    };
+    let raw = [args.rdi, args.rsi, args.rdx, args.r10, args.r8, args.r9];
+    // SAFETY: we are on the SYSCALL entry path: CPL 0, IF cleared by
+    // SFMASK, kernel stack active (stub switched via gs:[0]), and CR3 still
+    // holds the caller's address space (the stub never touches CR3).
+    args.rax = unsafe { crate::syscall::dispatch(args.rax, raw) };
 }
-
-/// Smoke-test syscall number: first entry from ring 3.
-pub const SMOKE_SYSCALL_ENTER: u64 = 1;
-/// Smoke-test syscall number: issued by user code after the first SYSRET.
-pub const SMOKE_SYSCALL_AFTER_SYSRET: u64 = 2;
-/// Syscall result: success.
-const SYSCALL_OK: u64 = 0;
-/// Syscall result: unknown syscall number (`u64::MAX`, i.e. -1).
-const SYSCALL_ENOSYS: u64 = u64::MAX;
 
 /// Called from `syscall_entry` when the saved user RIP is non-canonical.
 ///

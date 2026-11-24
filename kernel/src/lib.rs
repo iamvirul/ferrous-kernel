@@ -18,4 +18,5 @@ pub mod arch;
 pub mod drivers;
 pub mod logger;
 pub mod memory;
+pub mod syscall;
 pub mod task;

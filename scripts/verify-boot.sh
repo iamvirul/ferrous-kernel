@@ -237,11 +237,24 @@ EXPECTED_STRINGS=(
     "[OK] 17.1) GDT + TSS loaded (DPL=3 segments active)"
     "[OK] 17.2) SYSCALL MSRs initialised"
     "[OK] 17.3) User code + stack pages mapped"
-    "[PASS] Syscall received from Ring 3!"
-    # Printed by a second syscall that user code only reaches if the first
-    # SYSRET actually resumed ring 3, so a broken return path cannot pass.
-    "[PASS] Ring 3 resumed after SYSRET"
+
+    # Phase 2.1.5 — System call interface. The ring-3 program checks every
+    # syscall result itself and exits with code 0 only if all 13 checks
+    # passed (a non-zero code names the failing check), so this line proves
+    # the dispatcher, the error encoding, and repeated SYSCALL/SYSRET.
+    "System call interface smoke test (Phase 2.1.5)"
+    "[OK] 18.1) Ring-3 syscall test program loaded"
+    "sys_exit: process exited with code 0"
 )
+
+# sys_log output is compiled out of release kernels (ADR-0007), so the
+# user's log lines are only expected from debug builds.
+if [[ "$BUILD_MODE" == "debug" ]]; then
+    EXPECTED_STRINGS+=(
+        "user: hello from ring 3"
+        "user: all syscall checks passed"
+    )
+fi
 
 run_and_verify() {
     SERIAL_LOG="$PROJECT_ROOT/target/serial-verify.log"

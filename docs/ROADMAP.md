@@ -156,7 +156,7 @@ Every milestone must advance these core goals:
 | ADR-0004 | Scheduler Algorithm Selection | Proposed |
 | ADR-0005 | Capability System Data Structures | Proposed |
 | ADR-0006 | IPC Mechanism Design | Proposed |
-| ADR-0007 | [System Call ABI and Dispatch](adr/ADR-0007-system-call-abi-and-dispatch.md) | Proposed |
+| ADR-0007 | [System Call ABI and Dispatch](adr/ADR-0007-system-call-abi-and-dispatch.md) | Accepted |
 
 ### Milestones
 
@@ -167,8 +167,8 @@ Every milestone must advance these core goals:
 | 2.1.1 Task and Process Data Structures | #66 | Complete (PR #145) | Critical |
 | 2.1.2 Address Space Management | #67 | Complete (PR #149) | Critical |
 | 2.1.3 ELF Binary Loader | #69 | Complete | High |
-| 2.1.4 Kernel/User Mode Transition | #69 | Not Started | Critical |
-| 2.1.5 System Call Interface (minimal) | #70 | Not Started | Critical |
+| 2.1.4 Kernel/User Mode Transition | #68 | Complete (PR #165) | Critical |
+| 2.1.5 System Call Interface (minimal) | #70 | Complete (ADR-0007) | Critical |
 
 **Dependencies:** Phase 1.3 (memory management) must be complete.
 
