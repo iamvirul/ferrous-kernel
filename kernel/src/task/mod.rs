@@ -26,7 +26,9 @@ pub mod process;
 pub mod task;
 
 pub use process::{Process, ProcessId, ProcessState, ProcessStateError};
-pub use task::{RegisterState, TaskControlBlock, TaskId, TaskPriority, TaskState, TaskStateError};
+pub use task::{
+    FpuState, RegisterState, TaskControlBlock, TaskId, TaskPriority, TaskState, TaskStateError,
+};
 
 // ---------------------------------------------------------------------------
 // Smoke test (called from boot/src/main.rs Step 14)
@@ -92,6 +94,7 @@ pub fn smoke_test() {
             stack_top,
             stack_bottom,
             TaskPriority::Normal,
+            crate::memory::address_space::active_pml4_phys(),
         )
     };
 

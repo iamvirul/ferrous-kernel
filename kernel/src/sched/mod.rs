@@ -19,6 +19,11 @@
 //!   (b) never `enqueue` the task that is currently running. A task that
 //!   has stopped running may be requeued as usual.
 
+pub mod switch;
+mod switch_smoke;
+
+pub use switch_smoke::smoke_test as switch_smoke_test;
+
 use crate::sync::IrqSpinLock;
 use crate::task::TaskId;
 

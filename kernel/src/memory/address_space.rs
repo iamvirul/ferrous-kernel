@@ -430,6 +430,17 @@ pub fn active_pml4_phys() -> u64 {
     cr3 & flags::PHYS_ADDR_MASK
 }
 
+/// Load `pml4_phys` into CR3, making it the active address space (and
+/// flushing non-global TLB entries).
+///
+/// # Safety
+///
+/// `pml4_phys` must be a valid PML4 that maps the currently executing code,
+/// the current stack, and all kernel data identically to the current root.
+pub unsafe fn load_page_table_root(pml4_phys: u64) {
+    core::arch::asm!("mov cr3, {}", in(reg) pml4_phys, options(nostack, preserves_flags));
+}
+
 /// Returns `true` iff ring 3 may read `virt` under the page tables rooted at
 /// `pml4_phys`.
 ///
@@ -734,6 +745,14 @@ impl AddressSpace {
     ///
     /// After `destroy`, this `AddressSpace` must not be used (including
     /// `switch_to`).
+    ///
+    /// # Task lifetime (ADR-0008)
+    ///
+    /// Tasks cache this space's PML4 address in their `page_table_root`.
+    /// Every such task must be retired, and the CPU
+    /// switched away from this root, **before** calling `destroy`: it frees
+    /// the PML4 frame, and switching to a task that still names it would
+    /// load a reused frame into CR3.
     ///
     /// # Safety
     ///

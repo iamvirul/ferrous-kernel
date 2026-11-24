@@ -95,7 +95,7 @@ The privileged kernel core consists of six major subsystems:
 - `IrqSpinLock` — spinlock that masks interrupts while held; guards data shared with IRQ handlers, such as `SharedRunQueue`. A per-CPU nesting count (`ferrous_core::irq::IrqNesting`) restores IF only when the last guard drops, in any drop order (`kernel/src/sync`, Phase 2.2.1)
 - `ResourceGroup` — CPU time accounting and limits (Phase 2+)
 
-**Implementation status**: `TaskControlBlock` and `Process` defined (Phase 2.1.1 / PR #145). Run queue and `IrqSpinLock` implemented (Phase 2.2.1); scheduling policy (2.2.2) and context switch (2.2.3) pending.
+**Implementation status**: `TaskControlBlock` and `Process` defined (Phase 2.1.1 / PR #145). Run queue and `IrqSpinLock` implemented (Phase 2.2.1); context switch implemented (Phase 2.2.3, ADR-0008: `switch_to` with TSS.RSP0 and conditional CR3); scheduling policy (2.2.2) pending.
 
 **Scheduling Decisions**:
 - All scheduling decisions generate observability events

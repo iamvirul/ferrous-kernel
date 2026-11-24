@@ -85,7 +85,7 @@ ADRs have the following statuses:
 | ADR-0001 | [Kernel Entry Point Handoff and UEFI Boot Services Exit Strategy](ADR-0001-kernel-entry-point-handoff.md) | Approved | 2026-03-01 |
 | ADR-0002 | [Kernel and User Mode Transition Mechanism](ADR-0002-kernel-user-mode-transition.md) | Accepted | 2026-05-27 |
 | ADR-0007 | [System Call ABI and Dispatch](ADR-0007-system-call-abi-and-dispatch.md) | Accepted | 2026-11-24 |
-| ADR-0008 | [Context Switch Mechanism](ADR-0008-context-switch-mechanism.md) | Proposed | 2026-11-24 |
+| ADR-0008 | [Context Switch Mechanism](ADR-0008-context-switch-mechanism.md) | Accepted | 2026-11-24 |
 
 ---
 
