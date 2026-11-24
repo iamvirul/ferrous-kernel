@@ -158,6 +158,7 @@ Every milestone must advance these core goals:
 | ADR-0006 | IPC Mechanism Design | Proposed |
 | ADR-0007 | [System Call ABI and Dispatch](adr/ADR-0007-system-call-abi-and-dispatch.md) | Accepted |
 | ADR-0008 | [Context Switch Mechanism](adr/ADR-0008-context-switch-mechanism.md) | Accepted |
+| ADR-0009 | [Timer Interrupts and Preemption (PIC + PIT)](adr/ADR-0009-timer-interrupts.md) | Proposed |
 
 ### Milestones
 
