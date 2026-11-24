@@ -70,6 +70,18 @@ global_asm!(
     "mov r15, [rsi + {r15}]",
     // 5. Load next's x87/SSE state. Done here, inside the asm, so no
     //    compiler-generated SSE code can run after it and clobber it.
+    //
+    //    AMD CPUs do not restore the x87 last-instruction pointer, data
+    //    pointer, and opcode (FIP/FDP/FOP) unless the image has an unmasked
+    //    exception pending, so `next` would otherwise see `prev`'s values
+    //    (an information leak across tasks; CVE-2006-1056 class). Overwrite
+    //    them first with a harmless x87 load from a kernel constant: clear
+    //    pending exceptions, empty the tag word so the load cannot overflow
+    //    the stack, then load. FXRSTOR replaces everything else. This runs
+    //    on every CPU: it costs a few cycles and needs no CPU detection.
+    "fnclex",
+    "emms",
+    "fild dword ptr [rip + {fpu_scrub}]",
     "fxrstor64 [rcx]",
     // 6. Switch stacks. From here on we run on next's kernel stack.
     "mov rsp, [rsi + {rsp}]",
@@ -113,7 +125,12 @@ global_asm!(
     rsp = const offset_of!(RegisterState, rsp),
     rip = const offset_of!(RegisterState, rip),
     task_entry = sym task_entry,
+    fpu_scrub = sym FPU_POINTER_SCRUB,
 );
+
+/// Operand of the x87 load that overwrites FIP/FDP/FOP before every
+/// `fxrstor64` (see step 5 of `ferrous_switch_context`).
+static FPU_POINTER_SCRUB: i32 = 0;
 
 extern "sysv64" {
     fn ferrous_switch_context(
@@ -158,7 +175,11 @@ extern "sysv64" fn task_entry(entry: usize) -> ! {
 ///
 /// # Safety
 ///
-/// - Interrupts must be disabled, and stay so until this returns.
+/// - Exactly one interrupt-disabled scope must be open (an
+///   `InterruptGuard` held by the caller, nesting depth 1), not merely
+///   IF = 0. A new task closes one inherited scope in its trampoline, so a
+///   bare `cli` would underflow the per-CPU nesting count, and extra open
+///   scopes would leave the new task with interrupts off and locks held.
 /// - All four pointers must be valid; `prev` and `next` must be distinct
 ///   tasks; none may move or be freed while their task is switched out (the
 ///   asm stores into `prev` before reading `next`).
@@ -259,7 +280,8 @@ global_asm!(
     //                                      mxcsr /* r9 */) -> u64 /* rax */
     //
     // Before switching, loads:
-    //   - base+1 .. base+16 into BOTH 64-bit lanes of xmm0 .. xmm15;
+    //   - into xmm{i}: low lane base+i+1, high lane base+0x100+i+1, distinct
+    //     per lane so a lane swap or partial restore is detected;
     //   - `mxcsr` into MXCSR;
     //   - `base` onto the x87 stack (`fild`), distinct per side.
     // Once resumed, returns a mask of what did not survive:
@@ -282,53 +304,85 @@ global_asm!(
     "mov [rsp + 16], r9d",
     "ldmxcsr [rsp + 16]",
     "lea rax, [r8 + 1]",
-    "movq xmm0, rax",
-    "pshufd xmm0, xmm0, 0x44",
+    "mov [rsp], rax",
+    "lea rax, [r8 + 0x101]",
+    "mov [rsp + 8], rax",
+    "movdqu xmm0, [rsp]",
     "lea rax, [r8 + 2]",
-    "movq xmm1, rax",
-    "pshufd xmm1, xmm1, 0x44",
+    "mov [rsp], rax",
+    "lea rax, [r8 + 0x102]",
+    "mov [rsp + 8], rax",
+    "movdqu xmm1, [rsp]",
     "lea rax, [r8 + 3]",
-    "movq xmm2, rax",
-    "pshufd xmm2, xmm2, 0x44",
+    "mov [rsp], rax",
+    "lea rax, [r8 + 0x103]",
+    "mov [rsp + 8], rax",
+    "movdqu xmm2, [rsp]",
     "lea rax, [r8 + 4]",
-    "movq xmm3, rax",
-    "pshufd xmm3, xmm3, 0x44",
+    "mov [rsp], rax",
+    "lea rax, [r8 + 0x104]",
+    "mov [rsp + 8], rax",
+    "movdqu xmm3, [rsp]",
     "lea rax, [r8 + 5]",
-    "movq xmm4, rax",
-    "pshufd xmm4, xmm4, 0x44",
+    "mov [rsp], rax",
+    "lea rax, [r8 + 0x105]",
+    "mov [rsp + 8], rax",
+    "movdqu xmm4, [rsp]",
     "lea rax, [r8 + 6]",
-    "movq xmm5, rax",
-    "pshufd xmm5, xmm5, 0x44",
+    "mov [rsp], rax",
+    "lea rax, [r8 + 0x106]",
+    "mov [rsp + 8], rax",
+    "movdqu xmm5, [rsp]",
     "lea rax, [r8 + 7]",
-    "movq xmm6, rax",
-    "pshufd xmm6, xmm6, 0x44",
+    "mov [rsp], rax",
+    "lea rax, [r8 + 0x107]",
+    "mov [rsp + 8], rax",
+    "movdqu xmm6, [rsp]",
     "lea rax, [r8 + 8]",
-    "movq xmm7, rax",
-    "pshufd xmm7, xmm7, 0x44",
+    "mov [rsp], rax",
+    "lea rax, [r8 + 0x108]",
+    "mov [rsp + 8], rax",
+    "movdqu xmm7, [rsp]",
     "lea rax, [r8 + 9]",
-    "movq xmm8, rax",
-    "pshufd xmm8, xmm8, 0x44",
+    "mov [rsp], rax",
+    "lea rax, [r8 + 0x109]",
+    "mov [rsp + 8], rax",
+    "movdqu xmm8, [rsp]",
     "lea rax, [r8 + 10]",
-    "movq xmm9, rax",
-    "pshufd xmm9, xmm9, 0x44",
+    "mov [rsp], rax",
+    "lea rax, [r8 + 0x10a]",
+    "mov [rsp + 8], rax",
+    "movdqu xmm9, [rsp]",
     "lea rax, [r8 + 11]",
-    "movq xmm10, rax",
-    "pshufd xmm10, xmm10, 0x44",
+    "mov [rsp], rax",
+    "lea rax, [r8 + 0x10b]",
+    "mov [rsp + 8], rax",
+    "movdqu xmm10, [rsp]",
     "lea rax, [r8 + 12]",
-    "movq xmm11, rax",
-    "pshufd xmm11, xmm11, 0x44",
+    "mov [rsp], rax",
+    "lea rax, [r8 + 0x10c]",
+    "mov [rsp + 8], rax",
+    "movdqu xmm11, [rsp]",
     "lea rax, [r8 + 13]",
-    "movq xmm12, rax",
-    "pshufd xmm12, xmm12, 0x44",
+    "mov [rsp], rax",
+    "lea rax, [r8 + 0x10d]",
+    "mov [rsp + 8], rax",
+    "movdqu xmm12, [rsp]",
     "lea rax, [r8 + 14]",
-    "movq xmm13, rax",
-    "pshufd xmm13, xmm13, 0x44",
+    "mov [rsp], rax",
+    "lea rax, [r8 + 0x10e]",
+    "mov [rsp + 8], rax",
+    "movdqu xmm13, [rsp]",
     "lea rax, [r8 + 15]",
-    "movq xmm14, rax",
-    "pshufd xmm14, xmm14, 0x44",
+    "mov [rsp], rax",
+    "lea rax, [r8 + 0x10f]",
+    "mov [rsp + 8], rax",
+    "movdqu xmm14, [rsp]",
     "lea rax, [r8 + 16]",
-    "movq xmm15, rax",
-    "pshufd xmm15, xmm15, 0x44",
+    "mov [rsp], rax",
+    "lea rax, [r8 + 0x110]",
+    "mov [rsp + 8], rax",
+    "movdqu xmm15, [rsp]",
     "fild qword ptr [rsp + 32]",
     "call ferrous_switch_context",
     "mov r8, [rsp + 32]",
@@ -337,6 +391,7 @@ global_asm!(
     "lea rcx, [r8 + 1]",
     "cmp rcx, [rsp]",
     "setne al",
+    "lea rcx, [r8 + 0x101]",
     "cmp rcx, [rsp + 8]",
     "setne cl",
     "or al, cl",
@@ -347,6 +402,7 @@ global_asm!(
     "lea rcx, [r8 + 2]",
     "cmp rcx, [rsp]",
     "setne al",
+    "lea rcx, [r8 + 0x102]",
     "cmp rcx, [rsp + 8]",
     "setne cl",
     "or al, cl",
@@ -357,6 +413,7 @@ global_asm!(
     "lea rcx, [r8 + 3]",
     "cmp rcx, [rsp]",
     "setne al",
+    "lea rcx, [r8 + 0x103]",
     "cmp rcx, [rsp + 8]",
     "setne cl",
     "or al, cl",
@@ -367,6 +424,7 @@ global_asm!(
     "lea rcx, [r8 + 4]",
     "cmp rcx, [rsp]",
     "setne al",
+    "lea rcx, [r8 + 0x104]",
     "cmp rcx, [rsp + 8]",
     "setne cl",
     "or al, cl",
@@ -377,6 +435,7 @@ global_asm!(
     "lea rcx, [r8 + 5]",
     "cmp rcx, [rsp]",
     "setne al",
+    "lea rcx, [r8 + 0x105]",
     "cmp rcx, [rsp + 8]",
     "setne cl",
     "or al, cl",
@@ -387,6 +446,7 @@ global_asm!(
     "lea rcx, [r8 + 6]",
     "cmp rcx, [rsp]",
     "setne al",
+    "lea rcx, [r8 + 0x106]",
     "cmp rcx, [rsp + 8]",
     "setne cl",
     "or al, cl",
@@ -397,6 +457,7 @@ global_asm!(
     "lea rcx, [r8 + 7]",
     "cmp rcx, [rsp]",
     "setne al",
+    "lea rcx, [r8 + 0x107]",
     "cmp rcx, [rsp + 8]",
     "setne cl",
     "or al, cl",
@@ -407,6 +468,7 @@ global_asm!(
     "lea rcx, [r8 + 8]",
     "cmp rcx, [rsp]",
     "setne al",
+    "lea rcx, [r8 + 0x108]",
     "cmp rcx, [rsp + 8]",
     "setne cl",
     "or al, cl",
@@ -417,6 +479,7 @@ global_asm!(
     "lea rcx, [r8 + 9]",
     "cmp rcx, [rsp]",
     "setne al",
+    "lea rcx, [r8 + 0x109]",
     "cmp rcx, [rsp + 8]",
     "setne cl",
     "or al, cl",
@@ -427,6 +490,7 @@ global_asm!(
     "lea rcx, [r8 + 10]",
     "cmp rcx, [rsp]",
     "setne al",
+    "lea rcx, [r8 + 0x10a]",
     "cmp rcx, [rsp + 8]",
     "setne cl",
     "or al, cl",
@@ -437,6 +501,7 @@ global_asm!(
     "lea rcx, [r8 + 11]",
     "cmp rcx, [rsp]",
     "setne al",
+    "lea rcx, [r8 + 0x10b]",
     "cmp rcx, [rsp + 8]",
     "setne cl",
     "or al, cl",
@@ -447,6 +512,7 @@ global_asm!(
     "lea rcx, [r8 + 12]",
     "cmp rcx, [rsp]",
     "setne al",
+    "lea rcx, [r8 + 0x10c]",
     "cmp rcx, [rsp + 8]",
     "setne cl",
     "or al, cl",
@@ -457,6 +523,7 @@ global_asm!(
     "lea rcx, [r8 + 13]",
     "cmp rcx, [rsp]",
     "setne al",
+    "lea rcx, [r8 + 0x10d]",
     "cmp rcx, [rsp + 8]",
     "setne cl",
     "or al, cl",
@@ -467,6 +534,7 @@ global_asm!(
     "lea rcx, [r8 + 14]",
     "cmp rcx, [rsp]",
     "setne al",
+    "lea rcx, [r8 + 0x10e]",
     "cmp rcx, [rsp + 8]",
     "setne cl",
     "or al, cl",
@@ -477,6 +545,7 @@ global_asm!(
     "lea rcx, [r8 + 15]",
     "cmp rcx, [rsp]",
     "setne al",
+    "lea rcx, [r8 + 0x10f]",
     "cmp rcx, [rsp + 8]",
     "setne cl",
     "or al, cl",
@@ -487,6 +556,7 @@ global_asm!(
     "lea rcx, [r8 + 16]",
     "cmp rcx, [rsp]",
     "setne al",
+    "lea rcx, [r8 + 0x110]",
     "cmp rcx, [rsp + 8]",
     "setne cl",
     "or al, cl",
@@ -541,7 +611,8 @@ extern "sysv64" {
 ///
 /// # Safety
 ///
-/// Same as [`switch_context`].
+/// Same as [`switch_context`], including the depth-1 interrupt-scope
+/// requirement.
 pub unsafe fn switch_context_checking_callee_saved(
     prev: *mut RegisterState,
     next: *const RegisterState,
@@ -552,16 +623,17 @@ pub unsafe fn switch_context_checking_callee_saved(
     ferrous_switch_with_sentinels(prev, next, prev_fpu, next_fpu, base)
 }
 
-/// Self-test variant of [`switch_context`]: fills both lanes of xmm0–xmm15
-/// with `base + 1 ..= base + 16`, MXCSR with `mxcsr`, and pushes `base` on
+/// Self-test variant of [`switch_context`]: fills xmm0–xmm15 with distinct
+/// per-lane sentinels (low `base + i + 1`, high `base + 0x100 + i + 1`), MXCSR with `mxcsr`, and pushes `base` on
 /// the x87 stack before switching. Once `prev` is resumed, it returns a mask of
 /// what came back changed (bit i = xmm{i}, bit 16 = MXCSR, bit 17 = x87;
 /// 0 = all intact). It restores the caller's MXCSR and pops the x87 stack.
 ///
 /// # Safety
 ///
-/// Same as [`switch_context`], and `mxcsr` must have no reserved bits set
-/// (otherwise `ldmxcsr` faults).
+/// Same as [`switch_context`], including the depth-1 interrupt-scope
+/// requirement, and `mxcsr` must have no reserved bits set (otherwise
+/// `ldmxcsr` faults).
 pub unsafe fn switch_context_checking_vector_state(
     prev: *mut RegisterState,
     next: *const RegisterState,
