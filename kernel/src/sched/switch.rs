@@ -175,10 +175,16 @@ pub unsafe fn switch_to(
     );
 }
 
-/// Debug check: everything the switch touches after CR3 changes must map
-/// to the same physical memory under `next_root` as now (VA == PA, the
-/// identity map). That is `next`'s stack, the stack we are running on,
-/// both TCBs (the asm writes `prev`'s and reads `next`'s), and this code.
+/// Debug **spot check**: representative addresses of everything the switch
+/// touches after CR3 changes must map to the same physical memory under
+/// `next_root` as now (VA == PA, the identity map). It probes `next`'s
+/// kernel-entry stack top, `next`'s saved `rsp` (where its resume `ret`
+/// reads), the stack we are running on, both TCBs (the asm writes `prev`'s
+/// and reads `next`'s), and this code.
+///
+/// It is not proof: one address per object is checked. The real guarantee
+/// is the `TaskControlBlock::new` contract that every root maps all kernel
+/// memory identically.
 fn switch_memory_mapped_identically(
     prev: *const TaskControlBlock,
     next: *const TaskControlBlock,
@@ -192,11 +198,13 @@ fn switch_memory_mapped_identically(
     unsafe {
         core::arch::asm!("mov {}, rsp", out(reg) current_rsp, options(nomem, nostack, preserves_flags));
     }
-    // SAFETY: `next` is valid per the `switch_to` contract; the borrow is
-    // confined to this expression.
+    // SAFETY: `next` is valid per the `switch_to` contract; the borrows are
+    // confined to these expressions.
     let next_stack_probe = unsafe { (*next).stack_top() as u64 - 8 };
+    let next_saved_rsp = unsafe { (*next).registers.rsp };
     let probes = [
         next_stack_probe,
+        next_saved_rsp,
         current_rsp,
         prev as u64,
         next as u64,

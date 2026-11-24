@@ -746,6 +746,14 @@ impl AddressSpace {
     /// After `destroy`, this `AddressSpace` must not be used (including
     /// `switch_to`).
     ///
+    /// # Task lifetime (ADR-0008)
+    ///
+    /// Tasks cache this space's PML4 address in their `page_table_root`.
+    /// Every such task must be retired, and the CPU
+    /// switched away from this root, **before** calling `destroy`: it frees
+    /// the PML4 frame, and switching to a task that still names it would
+    /// load a reused frame into CR3.
+    ///
     /// # Safety
     ///
     /// - None of the regions may be currently executing.

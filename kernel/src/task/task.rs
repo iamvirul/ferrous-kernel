@@ -323,7 +323,11 @@ impl TaskControlBlock {
     /// - Both pointers must remain valid for the entire lifetime of this TCB.
     /// - The stack must be at least 8-byte aligned.
     /// - `page_table_root` must be the physical address of a valid PML4 that
-    ///   maps the kernel (and this stack) identically to every other root.
+    ///   maps the kernel (and this stack) identically to every other root,
+    ///   and it must **outlive this task**: it may not be freed (for example
+    ///   by `AddressSpace::destroy`) while this TCB could still be switched
+    ///   to. Otherwise a later switch would load a frame the allocator may
+    ///   already have reused. Tear down tasks before their address space.
     pub unsafe fn new(
         id: TaskId,
         owner_pid: ProcessId,
