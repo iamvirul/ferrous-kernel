@@ -70,3 +70,66 @@ pub fn halt_forever() -> ! {
         unsafe { core::arch::asm!("cli", "hlt", options(nomem, nostack)) };
     }
 }
+
+/// RFLAGS.IF — interrupt enable flag (bit 9).
+const RFLAGS_IF: u64 = 1 << 9;
+
+/// Interrupt-enable state captured by [`save_and_disable_interrupts`].
+///
+/// Pass it back to [`restore_interrupts`] to undo exactly that disable,
+/// which makes nested critical sections compose: an inner restore never
+/// re-enables interrupts that an outer section disabled.
+#[must_use = "dropping the saved state leaves interrupts disabled"]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SavedInterruptState {
+    enabled: bool,
+}
+
+impl SavedInterruptState {
+    /// `true` if interrupts were enabled when the state was saved.
+    pub const fn were_enabled(self) -> bool {
+        self.enabled
+    }
+}
+
+/// `true` if maskable interrupts are currently enabled (RFLAGS.IF set).
+pub fn interrupts_enabled() -> bool {
+    let rflags: u64;
+    // SAFETY: `pushfq; pop` reads RFLAGS through a single stack slot that is
+    // pushed and popped within the block. No memory beyond that is touched,
+    // and the flags are not modified.
+    unsafe {
+        core::arch::asm!("pushfq", "pop {}", out(reg) rflags, options(preserves_flags));
+    }
+    rflags & RFLAGS_IF != 0
+}
+
+/// Disable maskable interrupts and return the previous state.
+///
+/// Not `nomem`: the `cli` must also act as a compiler barrier, so memory
+/// accesses of the critical section cannot be hoisted above it.
+pub fn save_and_disable_interrupts() -> SavedInterruptState {
+    let rflags: u64;
+    // SAFETY: at CPL 0, `pushfq; pop; cli` reads RFLAGS (one transient stack
+    // slot) and clears IF. Clearing IF cannot break any invariant: it only
+    // defers maskable interrupts until `restore_interrupts`.
+    unsafe {
+        core::arch::asm!("pushfq", "pop {}", "cli", out(reg) rflags);
+    }
+    SavedInterruptState {
+        enabled: rflags & RFLAGS_IF != 0,
+    }
+}
+
+/// Undo a [`save_and_disable_interrupts`]: re-enable interrupts only if
+/// they were enabled when `saved` was captured.
+///
+/// Not `nomem`, for the same compiler-barrier reason as the disable.
+pub fn restore_interrupts(saved: SavedInterruptState) {
+    if saved.enabled {
+        // SAFETY: interrupts were enabled before the matching save, so
+        // re-enabling them restores the caller's original state. The IDT is
+        // installed long before any lock can be taken.
+        unsafe { core::arch::asm!("sti", options(nostack)) };
+    }
+}
