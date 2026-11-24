@@ -15,6 +15,7 @@ members = [
     "lib/alloc",
     "lib/boot-info",
     "lib/syscall",
+    "lib/sched",
 ]
 resolver = "2"
 

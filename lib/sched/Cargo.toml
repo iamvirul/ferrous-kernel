@@ -1,0 +1,19 @@
+[package]
+name = "ferrous-sched"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Scheduler data structures for Ferrous (run queue), host-testable"
+
+[lib]
+name = "ferrous_sched"
+
+[dependencies]
+# Pure no_std data structures: no dependencies by design.
+
+[lints.rust]
+# Pure data structures: no unsafe code, ever.
+unsafe_code = "forbid"
+warnings = "warn"
