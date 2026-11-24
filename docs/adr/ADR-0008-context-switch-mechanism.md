@@ -162,7 +162,9 @@ from it.
 Each TCB holds a 16-byte-aligned 512-byte `FpuState` in `FXSAVE` format. `switch_context`
 saves it **eagerly** with `fxsave64 [prev_fpu]` as its first instruction, and restores it
 with `fxrstor64 [next_fpu]` after loading `next`'s callee-saved registers and *before*
-the stack switch.
+the stack switch. No Rust code can run between the restore and the resume. New tasks
+start from `FpuState::initial()` (the `FNINIT` control word and the power-on MXCSR),
+never from the previous task's state.
 
 AMD CPUs do not restore the x87 last-instruction pointer, data pointer and opcode
 (FIP/FDP/FOP) from an image with no unmasked exception pending, so the incoming task
@@ -171,14 +173,16 @@ every `fxrstor64` the switch therefore runs `fnclex; emms; fild` from a kernel c
 which overwrites those three fields with harmless values. This is the Linux workaround.
 It runs unconditionally: it costs a few cycles and needs no CPU detection. With it, the
 restored state is the task's own on Intel and AMD alike. The self-test cannot observe
-FIP/FDP/FOP under QEMU, so this is covered by review rather than test. No Rust code, and so no compiler-generated SSE, can run between the
-restore and the resume. New tasks start from `FpuState::initial()` (the `FNINIT` control
-word and the power-on MXCSR), never from the previous task's state.
+FIP/FDP/FOP under QEMU, so this is covered by review rather than test.
 
 **Why eager rather than lazy (CR0.TS + #NM):** lazy switching leaks the previous owner's
 registers through speculative execution (LazyFP, CVE-2018-3665), needs an #NM handler,
-and saves little on modern CPUs. It also matters already: the kernel is compiled for the
-UEFI target, which emits SSE, so vector state is live in kernel code too.
+and saves little on modern CPUs. *(Corrected 2026-11-24: an earlier revision said the
+kernel's UEFI target emits SSE. It does not. `x86_64-unknown-uefi` is soft-float
+(`-mmx,-sse,+soft-float`), so compiled kernel code never touches vector state. The state
+being switched belongs to tasks, through the explicit FXSAVE/FXRSTOR and self-test asm
+and, later, to user code. ADR-0009 adds a compile-time guard that the kernel stays
+soft-float.)*
 
 **Why FXSAVE rather than XSAVE:** it covers x87, MMX and SSE (xmm0–15, MXCSR), which is
 every vector feature the kernel enables. AVX (YMM) state needs CR4.OSXSAVE, an XSAVE
@@ -291,14 +295,13 @@ lock on the hot path.
   teardown. Otherwise a later switch loads a reused frame into CR3. The rule is documented
   on `TaskControlBlock::new` and `AddressSpace::destroy`; process teardown (#73 onward)
   must enforce it.
-- **Interrupt and NMI handlers must preserve x87/SSE state** *(requirement for #75)*.
-  The eager switch assumes vector state changes only in task code. A Rust ISR built with
-  SSE that runs over a task would clobber that task's xmm registers or MXCSR, and the
-  next `fxsave` would capture the damage. An NMI is not masked by IF, so it can even land
-  in the few instructions between `fxrstor64` and the `jmp`. The IRQ and NMI entry stubs
-  in #75 must therefore save and restore the FPU state themselves (or handlers must be
-  built without SSE). Today this is latent, because interrupts are off and the boot NMI
-  handler only reports and halts.
+- **Interrupt and NMI handlers must not clobber x87/SSE state** *(requirement for #75;
+  corrected 2026-11-24)*. The eager switch assumes vector state changes only in task
+  code. An ISR or NMI handler that used SSE over a task would corrupt it, and an NMI can
+  land between `fxrstor64` and the `jmp`. The kernel's target is soft-float, so compiled
+  handlers never touch vector state, and the stubs need no `fxsave`. ADR-0009 enforces
+  this at compile time: the build fails if the kernel is ever compiled with SSE enabled.
+  If that ever changes, the IRQ and NMI stubs must save and restore the FPU themselves.
 
 ### Implementation Notes
 - `kernel/src/arch/x86_64/context.rs`: the `switch_context` asm and the entry trampoline.
@@ -382,3 +385,4 @@ later phase.
 - 2026-11-24: Amended (still Accepted, implemented with #72). x87/SSE state is now saved eagerly with FXSAVE/FXRSTOR (§5; previously deferred to Phase 3), and new tasks close their inherited interrupt scope in the entry trampoline (§3; previously deferred to 2.2.4). Validated by boot checks 20.4 and 20.5, each mutation-tested. Still outstanding: AVX/XSAVE, and system-wide interrupt enabling (#75)
 - 2026-11-24: Amended after an independent second review (implemented with #72). `switch_to` takes raw pointers (no reference lives across the suspension); it also updates the SYSCALL stack in `CpuLocal`, not only TSS.RSP0; it asserts that only the switch guard is open; the identity-map debug check covers both stacks and both TCBs; the new-task trampoline checks rsp alignment; and ISR/NMI FPU preservation is recorded as a requirement for #75. The self-test now checks both XMM lanes, the x87 stack, and the SYSCALL stack
 - 2026-11-24: Amended after CodeRabbit review (implemented with #72). Added the AMD FIP/FDP/FOP scrub before `fxrstor64`. The decision summary now lists the full `switch_to` safety contract. The identity-map assertion is described as a spot check and also probes `next`'s saved `rsp`. Added the rule that a cached root must outlive its tasks. The low-level switch requires an open depth-1 scope, not merely IF = 0. The self-test gives each XMM lane a distinct sentinel
+- 2026-11-24: Corrected (ADR-0009, #75). The UEFI target is soft-float, so kernel code never emits SSE; the ISR FPU requirement is restated accordingly and enforced at compile time. §3's per-CPU "interrupts enabled before the outermost scope" flag is made per-task (saved and restored by `switch_to`), because once a switch can start inside an ISR the per-CPU flag would leak the ISR's IF = 0 into the next task (see ADR-0009 §4). Also repaired a paragraph in §5 that an earlier edit had split
