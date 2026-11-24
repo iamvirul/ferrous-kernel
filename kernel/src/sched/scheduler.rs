@@ -28,7 +28,7 @@ use ferrous_sched::{RoundRobin, RunQueueError, SwitchReason};
 
 use super::switch::{init_kernel_task_context, switch_to};
 use super::RUN_QUEUE_CAPACITY;
-use crate::arch::x86_64::cpu::disable_interrupts;
+use crate::arch::x86_64::cpu::{disable_interrupts, irq_disable_depth};
 use crate::memory::address_space::active_pml4_phys;
 use crate::sync::IrqSpinLock;
 use crate::task::{ProcessId, TaskControlBlock, TaskId, TaskPriority, TaskState};
@@ -109,10 +109,17 @@ fn tcb_ptr(id: TaskId) -> Option<*mut TaskControlBlock> {
     unsafe { (*slot.get()).as_mut().map(|t| t as *mut TaskControlBlock) }
 }
 
-/// Run `f` on a short-lived shared borrow of `id`'s TCB.
+/// Run `f` on a short-lived shared borrow of `id`'s TCB, with interrupts
+/// masked for the whole lookup and borrow.
+///
+/// The masking matters once the timer can preempt (#75): an interrupt that
+/// reached `switch_to` while this borrow was live would write the borrowed
+/// TCB's save areas, violating the `TaskTable` invariant. Nesting is fine:
+/// internal callers that already hold the scheduler lock just add a level.
 fn with_tcb<R>(id: TaskId, f: impl FnOnce(&TaskControlBlock) -> R) -> Option<R> {
+    let _irq = disable_interrupts();
     // SAFETY: the pointer is valid (static slot). The borrow ends before
-    // `with_tcb` returns, so it never spans a switch.
+    // `_irq` is dropped, so no switch can happen while it is live.
     tcb_ptr(id).map(|p| f(unsafe { &*p }))
 }
 
@@ -131,6 +138,10 @@ fn transition(id: TaskId, from: TaskState, to: TaskState) {
 struct Scheduler {
     policy: RoundRobin<TaskId, RUN_QUEUE_CAPACITY>,
     next_free_slot: usize,
+    /// The kernel's permanent page-table root, captured at `init`. Every
+    /// kernel task runs under it, so a task can never cache a process root
+    /// that might later be destroyed (`TaskControlBlock::new` contract).
+    kernel_root: u64,
 }
 
 static SCHEDULER: IrqSpinLock<Option<Scheduler>> = IrqSpinLock::new(None);
@@ -139,20 +150,22 @@ static SCHEDULER: IrqSpinLock<Option<Scheduler>> = IrqSpinLock::new(None);
 static CONTEXT_SWITCHES: AtomicU64 = AtomicU64::new(0);
 
 /// Install `stack` as task `slot`'s kernel stack, running `entry` (or, for
-/// the boot task, already running on it: `entry = None`).
+/// the boot task, already running on it: `entry = None`), under the
+/// permanent page-table root `root`.
 ///
 /// # Safety
 ///
 /// `slot` is empty and will not be published before this returns; the
-/// stack is valid, 16-byte aligned, and exclusively this task's.
-unsafe fn install(slot: usize, bottom: *mut u8, top: *mut u8, entry: Option<fn() -> !>) {
+/// stack is valid, 16-byte aligned, and exclusively this task's; `root`
+/// outlives the task.
+unsafe fn install(slot: usize, bottom: *mut u8, top: *mut u8, root: u64, entry: Option<fn() -> !>) {
     let mut tcb = TaskControlBlock::new(
         TaskId::new(slot as u64),
         ProcessId::new(0),
         top,
         bottom,
         TaskPriority::Normal,
-        active_pml4_phys(),
+        root,
     );
     if let Some(entry) = entry {
         init_kernel_task_context(&mut tcb, entry);
@@ -170,8 +183,14 @@ unsafe fn install(slot: usize, bottom: *mut u8, top: *mut u8, entry: Option<fn()
 ///
 /// # Safety
 ///
-/// - The caller's RSP must lie within the given boot stack.
-/// - Kernel page tables active; single CPU.
+/// - `boot_stack_bottom .. boot_stack_top` must describe the caller's own
+///   kernel stack: valid, exclusively owned, with the caller's RSP inside
+///   it, and `boot_stack_top` 16-byte aligned (the switch and SYSCALL paths
+///   require it). The stack and its mappings must stay valid for as long as
+///   `BOOT_TASK` can run, because the scheduler retains these bounds.
+/// - The kernel's permanent page tables must be active: their root is
+///   captured here and used for every kernel task.
+/// - Single CPU; no interrupt scope or lock held.
 pub unsafe fn init(
     boot_stack_bottom: *mut u8,
     boot_stack_top: *mut u8,
@@ -182,12 +201,19 @@ pub unsafe fn init(
     if sched.is_some() {
         return Err(SchedError::AlreadyInitialized);
     }
+    assert!(
+        (boot_stack_top as usize).is_multiple_of(16),
+        "scheduler init: boot stack top must be 16-byte aligned"
+    );
+    let kernel_root = active_pml4_phys();
     // SAFETY: slots 0 and 1 are empty (first init); the boot stack is the
-    // caller's own; the idle stack is a unique `&'static mut`.
+    // caller's own (contract above); the idle stack is a unique
+    // `&'static mut`; `kernel_root` is the permanent kernel root.
     install(
         BOOT_TASK.as_u64() as usize,
         boot_stack_bottom,
         boot_stack_top,
+        kernel_root,
         None,
     );
     let idle = idle_stack.0.as_mut_ptr_range();
@@ -195,12 +221,14 @@ pub unsafe fn init(
         IDLE_TASK.as_u64() as usize,
         idle.start,
         idle.end,
+        kernel_root,
         Some(idle_entry),
     );
     transition(BOOT_TASK, TaskState::Ready, TaskState::Running);
     *sched = Some(Scheduler {
         policy: RoundRobin::new(BOOT_TASK, IDLE_TASK, TIME_SLICE_TICKS),
         next_free_slot: 2,
+        kernel_root,
     });
     Ok(())
 }
@@ -211,6 +239,11 @@ pub fn is_initialized() -> bool {
 }
 
 /// Create a kernel task running `entry` on `stack` and make it runnable.
+///
+/// The task runs under the kernel's permanent page-table root (captured at
+/// [`init`]), whatever address space is active when `spawn` is called. It
+/// therefore never caches a process root that could be destroyed while
+/// the task is switched out.
 ///
 /// # Errors
 ///
@@ -224,8 +257,9 @@ pub fn spawn(entry: fn() -> !, stack: &'static mut KernelStack) -> Result<TaskId
     }
     let range = stack.0.as_mut_ptr_range();
     // SAFETY: `slot` was never used (monotonic allocator, under the lock);
-    // the stack is a unique `&'static mut` and 16-byte aligned by type.
-    unsafe { install(slot, range.start, range.end, Some(entry)) };
+    // the stack is a unique `&'static mut` and 16-byte aligned by type; the
+    // kernel root is permanent.
+    unsafe { install(slot, range.start, range.end, sched.kernel_root, Some(entry)) };
     sched.next_free_slot += 1;
     let id = TaskId::new(slot as u64);
     // Capacity is checked at compile time (MAX_TASKS - 1 <= queue size), and
@@ -269,13 +303,19 @@ pub fn context_switch_count() -> u64 {
 /// Give up the CPU; the caller goes to the back of the queue. Returns
 /// immediately if nothing else is runnable (or the scheduler is not
 /// initialised).
+///
+/// # Panics
+///
+/// If called with an interrupt scope (`InterruptGuard`) or a lock held.
+/// The same rule applies to [`preempt_if_needed`], [`block_current`], and
+/// [`exit_current`].
 pub fn yield_now() {
     schedule(SwitchReason::Yield);
 }
 
 /// **Timer ISR hook (#75).** Charge one tick to the running task and
 /// advance its time slice. Never switches, so it is safe to call from an
-/// interrupt handler. Returns `true` if a reschedule is now pending: call
+/// interrupt handler, including one that holds an interrupt scope. Returns `true` if a reschedule is now pending: call
 /// [`preempt_if_needed`] at the next safe point (with no locks held, e.g. on
 /// the interrupt-return path).
 pub fn scheduler_tick() -> bool {
@@ -289,7 +329,11 @@ pub fn scheduler_tick() -> bool {
 }
 
 /// Safe point: preempt the running task if a tick (or a wake while idle)
-/// requested it. Must be called with no locks held.
+/// requested it.
+///
+/// Must be called with **no interrupt scope and no lock** held (it panics
+/// otherwise). The timer ISR (#75) must therefore end its own
+/// `InterruptGuard` before calling this on the interrupt-return path.
 pub fn preempt_if_needed() {
     let pending = SCHEDULER
         .lock()
@@ -344,7 +388,18 @@ pub fn exit_current() -> ! {
 }
 
 /// Ask the policy for the next task and switch to it (ADR-0004 §3).
+///
+/// Callers must hold **no interrupt scope and no lock**: this opens the
+/// switch guard itself, and `switch_to` requires that guard to be the only
+/// open scope (ADR-0008). With an outer scope, a new task would inherit two
+/// scopes, close only one, and start with interrupts stuck off. That is
+/// asserted in every build, because the release-mode failure is silent.
 fn schedule(reason: SwitchReason) {
+    assert_eq!(
+        irq_disable_depth(),
+        0,
+        "schedule: called with an interrupt scope or lock held"
+    );
     // The switch guard: the only interrupt scope open at `switch_to`.
     let irq = disable_interrupts();
 
