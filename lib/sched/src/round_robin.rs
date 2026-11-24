@@ -9,8 +9,11 @@
 //!
 //! - Exactly one task is `current` (running) at all times; it is never in
 //!   the queue.
-//! - The `idle` task is never queued. It runs only when the queue is empty,
-//!   and is preempted as soon as work exists.
+//! - The `idle` task is never queued. It runs only when the queue is empty.
+//!   New work (`admit`, or a `tick` that finds the queue non-empty) only
+//!   sets `need_resched`, a *request*. The policy never switches by itself:
+//!   idle gives up the CPU when the kernel next calls `switch` at a safe
+//!   point or yield.
 //! - Every non-idle task runs for at most `slice_ticks` ticks before a
 //!   preemption is requested.
 
@@ -122,8 +125,8 @@ impl<T: Copy + Eq, const N: usize> RoundRobin<T, N> {
     /// Account one timer tick to the running task. Returns
     /// [`need_resched`](Self::need_resched).
     ///
-    /// The idle task has no slice: it is displaced on the first tick that
-    /// finds work queued.
+    /// The idle task has no slice: the first tick that finds work queued
+    /// requests a reschedule (it does not switch; see [`switch`](Self::switch)).
     pub fn tick(&mut self) -> bool {
         if self.is_idle() {
             if !self.queue.is_empty() {

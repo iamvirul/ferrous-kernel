@@ -194,8 +194,10 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Single-CPU, single-priority, strict FIFO, with a fixed slice. It offers
   `admit`, `tick` (sets `need_resched` when the slice runs out),
   `switch(Yield | Preempt | Block | Exit)` and `remove`. The idle task is
-  never queued; it runs only when the queue is empty, and is displaced on
-  the first tick or wake once work exists. 20 policy tests, including a
+  never queued; it runs only when the queue is empty. When work arrives, a
+  wake or the next tick only *requests* a reschedule (`need_resched`).
+  Idle gives up the CPU at the next safe point (`preempt_if_needed`) or
+  yield, since neither `wake` nor `tick` switches. 20 policy tests, including a
   20,000-operation invariant stress test
 - `RunQueue::enqueue_known_absent`: O(1) re-queue for the scheduler hot
   path. The duplicate scan is kept as a debug assertion

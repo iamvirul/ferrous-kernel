@@ -64,14 +64,16 @@ State: the run queue, `current: T`, the `idle: T` handle, `slice_ticks`,
 | Operation | Effect |
 |---|---|
 | `admit(t)` | A new or woken task becomes Ready: enqueue at the back. If the CPU is idle, set `need_resched`. |
-| `tick()` | Called once per timer tick for the running task. Idle is preempted as soon as work exists. Any other task has its remaining slice decremented, and `need_resched` is set at 0. Returns `need_resched`. |
+| `tick()` | Called once per timer tick for the running task. While idle, a tick that finds work queued requests a reschedule. Any other task has its remaining slice decremented, and `need_resched` is set at 0. Returns `need_resched`. |
 | `switch(reason)` | Picks the next task. With `Yield` or `Preempt` the outgoing task goes to the back (unless it is idle); with `Block` or `Exit` it is dropped. Next is the front of the queue, or idle if the queue is empty. Resets the slice and clears `need_resched`. Returns `None` if next == current (no switch). |
 | `remove(t)` | Takes a *queued* task out (blocked or killed while Ready). |
 
 - **Fixed slice:** `TIME_SLICE_TICKS = 10`. The tick period belongs to #75; at the
   planned 1 kHz this is 10 ms.
-- **The idle task is never queued.** It runs only when the queue is empty, and is
-  preempted on the first tick (or wake) after work arrives.
+- **The idle task is never queued.** It runs only when the queue is empty. When work
+  arrives, `admit` (a wake) or the next `tick` sets `need_resched`. That is a *request*:
+  neither switches. Idle gives up the CPU at the next safe point (`preempt_if_needed`) or
+  when it yields.
 
 ### 3. Kernel scheduler
 
@@ -229,3 +231,9 @@ switch. `scheduler_tick()` is O(1). Only `remove` of a queued task is O(n), boun
 
 - 2026-11-24: Created (Status: Proposed); to be accepted before the Phase 2.2.2 implementation (#73) lands
 - 2026-11-24: Accepted (PR #171). Implemented in `lib/sched/src/round_robin.rs` and `kernel/src/sched/scheduler.rs`. Validated in QEMU by boot checks 21.1–21.4 (round-robin order, exact time-slice preemption via the tick hook, idle only when the queue is empty, block/wake/exit), each also mutation-tested. Live timer preemption is wired in #75
+- 2026-11-24: Amended after CodeRabbit review (implemented with #73):
+  - `schedule()` asserts, in every build, that no interrupt scope or lock is held at its entry points;
+  - observer TCB borrows (`task_state`, `cpu_ticks`) mask interrupts;
+  - kernel tasks use the permanent kernel root captured at `init`, not whatever root is active at `spawn`;
+  - `init`'s boot-stack contract is specified (alignment and lifetime);
+  - the idle wording is clarified: a wake or tick *requests* a reschedule, and does not switch.
