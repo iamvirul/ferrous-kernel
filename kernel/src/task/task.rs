@@ -237,6 +237,12 @@ pub struct TaskControlBlock {
     pub time_slice: u32,
     /// ID of the [`Process`](super::Process) that owns this task.
     pub owner_pid: ProcessId,
+    /// Physical address of the PML4 this task runs under (its CR3 value).
+    ///
+    /// Cached from the owning process's address space at creation, so a
+    /// context switch needs no process lookup (ADR-0008). Kernel-only tasks
+    /// use the kernel root.
+    page_table_root: u64,
 }
 
 // SAFETY: `stack_top` and `stack_bottom` are never dereferenced through the
@@ -258,12 +264,15 @@ impl TaskControlBlock {
     /// - `stack_bottom` must be the lowest valid address of that region.
     /// - Both pointers must remain valid for the entire lifetime of this TCB.
     /// - The stack must be at least 8-byte aligned.
+    /// - `page_table_root` must be the physical address of a valid PML4 that
+    ///   maps the kernel (and this stack) identically to every other root.
     pub unsafe fn new(
         id: TaskId,
         owner_pid: ProcessId,
         stack_top: *mut u8,
         stack_bottom: *mut u8,
         priority: TaskPriority,
+        page_table_root: u64,
     ) -> Self {
         debug_assert!(
             stack_top > stack_bottom,
@@ -294,6 +303,7 @@ impl TaskControlBlock {
             priority,
             time_slice: Self::DEFAULT_TIME_SLICE,
             owner_pid,
+            page_table_root,
         }
     }
 
@@ -338,6 +348,11 @@ impl TaskControlBlock {
     /// Return the bottom of the kernel stack (lowest valid address).
     pub fn stack_bottom(&self) -> *mut u8 {
         self.stack_bottom
+    }
+
+    /// Physical address of the PML4 this task runs under (its CR3 value).
+    pub fn page_table_root(&self) -> u64 {
+        self.page_table_root
     }
 
     /// Return the stack size in bytes.

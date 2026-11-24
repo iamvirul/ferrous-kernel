@@ -92,6 +92,7 @@ pub fn smoke_test() {
             stack_top,
             stack_bottom,
             TaskPriority::Normal,
+            crate::memory::address_space::active_pml4_phys(),
         )
     };
 
