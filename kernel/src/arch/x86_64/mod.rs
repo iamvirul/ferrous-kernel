@@ -1,5 +1,6 @@
 //! x86-64 architecture support.
 
+pub mod context;
 pub mod cpu;
 pub mod entry;
 pub mod gdt;
