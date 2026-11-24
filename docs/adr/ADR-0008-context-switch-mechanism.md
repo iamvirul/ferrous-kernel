@@ -40,9 +40,10 @@ What already exists and constrains the design:
 
 **Decision:** A `global_asm!` routine, `switch_context(prev, next)`, saves and restores
 the callee-saved registers plus `rsp` and `rip` directly in the two tasks' `RegisterState`.
-It then resumes `next` with `jmp`, not `ret`. A safe-signature Rust wrapper, `switch_to`,
-does the address-space and TSS work *before* the assembly runs, and requires proof that
-interrupts are disabled.
+It then resumes `next` with `jmp`, not `ret`. A Rust wrapper, `switch_to`, does the
+address-space and TSS work *before* the assembly runs, and requires proof that interrupts
+are disabled. It is an `unsafe fn`: its one remaining precondition, that `next` holds a
+resumable context, cannot be expressed in the type system.
 
 ### 1. The assembly: `switch_context(prev: *mut RegisterState, next: *const RegisterState)`
 
@@ -204,7 +205,8 @@ lock on the hot path.
 
 ### Positive
 - The scheduler (2.2.2) gets a single primitive, `switch_to`, that is hard to misuse: it
-  needs a guard and does the TSS/CR3 work itself.
+  needs a guard, does the TSS/CR3 work itself, and asserts (in every build) that `next`
+  has a resume `rip`. Debug builds also check that `next.rsp` is within `next`'s stack.
 - New tasks need no forged frames.
 
 ### Negative
