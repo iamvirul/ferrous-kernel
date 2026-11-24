@@ -91,6 +91,26 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   page-crossing pointers, EINVAL for length and UTF-8) and exits with code
   0 only if all pass; `verify-boot.sh` requires that exit code
 
+#### Phase 2.2.1 - Runnable Task Queue
+- New `ferrous-sched` crate (`lib/sched`, `unsafe` forbidden): generic
+  `RunQueue<T, N>`, a fixed-capacity FIFO ring buffer with no heap.
+  `enqueue` rejects duplicates (`AlreadyQueued`, preserving the
+  queued-XOR-running invariant) and overflow (`Full`); `remove` takes a
+  task from any position and keeps the others in order. All operations
+  run in bounded time. 20 unit tests, including remove-from-middle across
+  the wraparound and a 10,000-operation model check against a `Vec`
+- `kernel::sync::IrqSpinLock`: the kernel's first lock. It saves and
+  disables interrupts, then spins on an atomic; the guard releases the
+  lock *before* restoring IF, so nested locks compose
+- `arch::x86_64::cpu`: `interrupts_enabled`, `save_and_disable_interrupts`,
+  `restore_interrupts`, using a `#[must_use]` `SavedInterruptState`
+- `kernel::sched`: `RunQueue` (`TaskId`, capacity 256) and the
+  `SharedRunQueue` lock alias. Boot smoke test 19.1–19.5 covers the lock
+  plus FIFO, remove-from-middle, duplicate and full rejection, and drain
+- Known gap: restoring IF=1 is not exercised at boot, because the kernel
+  runs with interrupts off and the PIC/APIC are not yet masked (Phase
+  2.2.4)
+
 #### Documentation and Tooling
 - README badges: CI, Release, CodeQL, latest release version, license,
   Rust language, and architecture

@@ -176,7 +176,7 @@ Every milestone must advance these core goals:
 
 | Task | Issue | Status | Priority |
 |------|-------|--------|----------|
-| 2.2.1 Runnable Task Queue | #71 | Not Started | Critical |
+| 2.2.1 Runnable Task Queue | #71 | Complete | Critical |
 | 2.2.2 Basic Round-Robin Scheduler | #72 | Not Started | Critical |
 | 2.2.3 Context Switching (assembly + Rust) | #73 | Not Started | Critical |
 | 2.2.4 Timer Interrupts (PIT/APIC) | #74 | Not Started | High |
