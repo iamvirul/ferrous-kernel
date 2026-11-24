@@ -13,8 +13,11 @@
 //!   both mutually exclusive and safe against this CPU's interrupt handlers
 //!   (the timer will enqueue and dequeue from IRQ context in 2.2.4).
 //! - Single-owner invariant: a task is either queued or running, never
-//!   both. `enqueue` rejects a task that is already queued, and the
-//!   scheduler removes a task with `dequeue` before running it.
+//!   both. The queue enforces only half of it: `enqueue` rejects a task that
+//!   is *already queued*, but it cannot see which task is running. The
+//!   scheduler must therefore (a) `dequeue` a task before running it, and
+//!   (b) never `enqueue` the task that is currently running. A task that
+//!   has stopped running may be requeued as usual.
 
 use crate::sync::IrqSpinLock;
 use crate::task::TaskId;

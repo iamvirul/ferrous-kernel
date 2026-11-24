@@ -20,8 +20,11 @@ extern crate std;
 /// Errors returned by [`RunQueue::enqueue`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunQueueError {
-    /// The item is already queued. A task may be runnable at most once,
-    /// which enforces the single-owner invariant: queued XOR running.
+    /// The item is already queued; each handle may appear at most once.
+    ///
+    /// This is only half of the scheduler's "queued XOR running" invariant:
+    /// the queue cannot tell whether a handle it does *not* hold is running.
+    /// The scheduler must never enqueue the task that is currently running.
     AlreadyQueued,
     /// All `N` slots are occupied.
     Full,
@@ -37,7 +40,12 @@ pub enum RunQueueError {
 ///
 /// - Exactly the `len` slots at logical positions `head .. head + len`
 ///   (mod `N`) are `Some`; every other slot is `None`.
-/// - No handle appears twice.
+/// - No handle appears twice. This is enforced here.
+///
+/// The queue does **not** know which task is running. Keeping a task out of
+/// the queue while it runs is the scheduler's job: `dequeue` it before
+/// running it, and never `enqueue` the running task. A task that has
+/// stopped running can be requeued normally.
 ///
 /// # Complexity
 ///

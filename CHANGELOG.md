@@ -94,19 +94,28 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 #### Phase 2.2.1 - Runnable Task Queue
 - New `ferrous-sched` crate (`lib/sched`, `unsafe` forbidden): generic
   `RunQueue<T, N>`, a fixed-capacity FIFO ring buffer with no heap.
-  `enqueue` rejects duplicates (`AlreadyQueued`, preserving the
-  queued-XOR-running invariant) and overflow (`Full`); `remove` takes a
+  `enqueue` rejects duplicates (`AlreadyQueued`) and overflow (`Full`).
+  The scheduler must still never enqueue the running task: the queue
+  cannot see it, so it keeps only half of the queued-XOR-running
+  invariant. `remove` takes a
   task from any position and keeps the others in order. All operations
   run in bounded time. 20 unit tests, including remove-from-middle across
   the wraparound and a 10,000-operation model check against a `Vec`
-- `kernel::sync::IrqSpinLock`: the kernel's first lock. It saves and
-  disables interrupts, then spins on an atomic; the guard releases the
-  lock *before* restoring IF, so nested locks compose
-- `arch::x86_64::cpu`: `interrupts_enabled`, `save_and_disable_interrupts`,
-  `restore_interrupts`, using a `#[must_use]` `SavedInterruptState`
+- `kernel::sync::IrqSpinLock`: the kernel's first lock. It disables
+  interrupts, then spins on an atomic. The guard releases the lock
+  *before* its interrupt scope ends, and guards of different locks may be
+  dropped in any order
+- `arch::x86_64::cpu`: `interrupts_enabled`, `disable_interrupts`, which
+  returns an RAII `InterruptGuard`, and `irq_disable_depth`. A per-CPU
+  nesting count re-enables interrupts only when the *last* guard drops,
+  and only if they were on before the first one, so an out-of-order
+  release can never re-enable them while a lock is held
+- `ferrous_core::irq::IrqNesting`: that counting logic as a pure,
+  host-tested state machine (8 tests, including out-of-order release)
 - `kernel::sched`: `RunQueue` (`TaskId`, capacity 256) and the
   `SharedRunQueue` lock alias. Boot smoke test 19.1–19.5 covers the lock
-  plus FIFO, remove-from-middle, duplicate and full rejection, and drain
+  (including out-of-order release of two locks), plus FIFO,
+  remove-from-middle, duplicate and full rejection, and drain
 - Known gap: restoring IF=1 is not exercised at boot, because the kernel
   runs with interrupts off and the PIC/APIC are not yet masked (Phase
   2.2.4)
