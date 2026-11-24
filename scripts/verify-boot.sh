@@ -244,9 +244,11 @@ EXPECTED_STRINGS=(
 
     # Phase 2.2.3 — context switching (also before Step 17)
     "Context switch smoke test (Phase 2.2.3)"
-    "[OK] 20.1) ping-pong: 9 switches alternated A/B, TSS.RSP0 updated, no CR3 load on same root"
+    "[OK] 20.1) ping-pong: 9 switches alternated A/B, TSS.RSP0 and SYSCALL stack updated, no CR3 load on same root"
     "[OK] 20.2) callee-saved: rbx, rbp, r12-r15 preserved across switches (both directions)"
     "[OK] 20.3) CR3: each task saw its own address space; 4 root changes, 4 CR3 loads"
+    "[OK] 20.4) x87/SSE: xmm0-15 (both lanes), MXCSR, x87 stack preserved both ways; new task starts clean"
+    "[OK] 20.5) interrupt scopes balanced across all switches"
     "[OK] Context switch smoke test complete"
 
     # Phase 2.1.4 — Kernel / User Mode Transition
