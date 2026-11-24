@@ -7,7 +7,8 @@
 //!
 //! # Interim semantics (until the scheduler, Phase 2.2.2)
 //!
-//! - `sys_yield` returns immediately: there is no other runnable task.
+//! - `sys_yield` calls the scheduler (Phase 2.2.2). Ring-3 code is not yet
+//!   a scheduled task of its own, so today it always resumes immediately.
 //! - `sys_exit` logs the exit code and halts: with a single task and no
 //!   scheduler, nothing else can run.
 
@@ -61,11 +62,11 @@ fn sys_exit(code: i32) -> ! {
     halt_forever()
 }
 
-/// `sys_yield()`: give up the CPU. Returns `0`.
-///
-/// Interim: with no scheduler there is no other runnable task, so yielding
-/// is an immediate return (Phase 2.2.2 wires this to the scheduler).
+/// `sys_yield()`: give up the CPU (round-robin: back of the run queue).
+/// Returns `0` once the caller runs again, or immediately if nothing else
+/// is runnable or the scheduler is not initialised.
 fn sys_yield() -> SyscallResult {
+    crate::sched::scheduler::yield_now();
     Ok(0)
 }
 
