@@ -174,6 +174,16 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     switch code
   - The self-test checks both 64-bit lanes of every XMM register and the
     x87 stack (a dropped `fxrstor` now reports mask `0x3ffff`)
+- Fixes from the CodeRabbit review:
+  - AMD x87 pointer leak: before every `fxrstor64`, `fnclex; emms; fild`
+    from a kernel constant overwrites FIP/FDP/FOP. AMD does not restore
+    them from an image with no pending exception, so the previous task's
+    values would leak (CVE-2006-1056 class)
+  - The identity-map debug check also probes `next`'s saved `rsp`
+  - Each XMM lane gets a distinct sentinel, so a lane swap is detected
+  - Documented contracts: the low-level switch needs a depth-1 interrupt
+    scope, not merely IF = 0; a cached `page_table_root` must outlive its
+    tasks (`TaskControlBlock::new`, `AddressSpace::destroy`)
 - ADR-0008 amended for all of the above. ISR/NMI FPU preservation is
   recorded as a requirement for #75
 - Still outstanding: AVX/XSAVE state (not enabled), and system-wide

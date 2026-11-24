@@ -42,8 +42,12 @@ What already exists and constrains the design:
 the callee-saved registers plus `rsp` and `rip` directly in the two tasks' `RegisterState`.
 It then resumes `next` with `jmp`, not `ret`. A Rust wrapper, `switch_to`, does the
 address-space and TSS work *before* the assembly runs, and requires proof that interrupts
-are disabled. It is an `unsafe fn`: its one remaining precondition, that `next` holds a
-resumable context, cannot be expressed in the type system.
+are disabled. It is an `unsafe fn`, because several conditions cannot be expressed in
+the type system. Both TCB pointers must be live, distinct and not otherwise borrowed;
+`prev` must be the running task; `next` must hold a resumable context; and the switch
+guard must be the only open interrupt scope. The full contract is in §2 and in the
+function's `# Safety` section. The nonzero-`rip` assertion is a diagnostic, not proof that
+a switch is safe.
 
 ### 1. The assembly: `switch_context(prev, next, prev_fpu, next_fpu)`
 
@@ -158,7 +162,16 @@ from it.
 Each TCB holds a 16-byte-aligned 512-byte `FpuState` in `FXSAVE` format. `switch_context`
 saves it **eagerly** with `fxsave64 [prev_fpu]` as its first instruction, and restores it
 with `fxrstor64 [next_fpu]` after loading `next`'s callee-saved registers and *before*
-the stack switch. No Rust code, and so no compiler-generated SSE, can run between the
+the stack switch.
+
+AMD CPUs do not restore the x87 last-instruction pointer, data pointer and opcode
+(FIP/FDP/FOP) from an image with no unmasked exception pending, so the incoming task
+would see the outgoing task's values (an information leak; CVE-2006-1056 class). Before
+every `fxrstor64` the switch therefore runs `fnclex; emms; fild` from a kernel constant,
+which overwrites those three fields with harmless values. This is the Linux workaround.
+It runs unconditionally: it costs a few cycles and needs no CPU detection. With it, the
+restored state is the task's own on Intel and AMD alike. The self-test cannot observe
+FIP/FDP/FOP under QEMU, so this is covered by review rather than test. No Rust code, and so no compiler-generated SSE, can run between the
 restore and the resume. New tasks start from `FpuState::initial()` (the `FNINIT` control
 word and the power-on MXCSR), never from the previous task's state.
 
@@ -267,9 +280,17 @@ lock on the hot path.
   switch moves to XSAVE; x87/MMX/SSE are fully preserved.
 - **The identity-map invariant is load-bearing.** If kernel stacks ever move out of
   memory that is mapped in every address space, loading CR3 before the stack switch
-  becomes unsafe. Before CR3 is loaded, a debug assertion checks that `next`'s stack,
-  the current stack, both TCBs and the switch code all translate to themselves under
-  `next`'s root.
+  becomes unsafe. Before CR3 is loaded, a debug assertion **spot-checks**
+  representative addresses under `next`'s root: `next`'s stack top, `next`'s saved
+  `rsp`, the current stack, both TCBs and the switch code must each translate to
+  themselves. One address per object is not proof. Callers must guarantee that the whole
+  live stack, both save areas and the switch code are mapped (the `TaskControlBlock::new`
+  contract).
+- **A cached root must outlive its tasks.** `AddressSpace::destroy` frees the PML4 frame.
+  Every task caching that root must be retired, and the CPU switched away from it, before
+  teardown. Otherwise a later switch loads a reused frame into CR3. The rule is documented
+  on `TaskControlBlock::new` and `AddressSpace::destroy`; process teardown (#73 onward)
+  must enforce it.
 - **Interrupt and NMI handlers must preserve x87/SSE state** *(requirement for #75)*.
   The eager switch assumes vector state changes only in task code. A Rust ISR built with
   SSE that runs over a task would clobber that task's xmm registers or MXCSR, and the
@@ -360,3 +381,4 @@ later phase.
 - 2026-11-24: Accepted (PR #169). Implemented in `kernel/src/arch/x86_64/context.rs` and `kernel/src/sched/switch.rs`; validated in QEMU by boot checks 20.1–20.3 (ping-pong, callee-saved sentinels, CR3 between two address spaces), each also mutation-tested
 - 2026-11-24: Amended (still Accepted, implemented with #72). x87/SSE state is now saved eagerly with FXSAVE/FXRSTOR (§5; previously deferred to Phase 3), and new tasks close their inherited interrupt scope in the entry trampoline (§3; previously deferred to 2.2.4). Validated by boot checks 20.4 and 20.5, each mutation-tested. Still outstanding: AVX/XSAVE, and system-wide interrupt enabling (#75)
 - 2026-11-24: Amended after an independent second review (implemented with #72). `switch_to` takes raw pointers (no reference lives across the suspension); it also updates the SYSCALL stack in `CpuLocal`, not only TSS.RSP0; it asserts that only the switch guard is open; the identity-map debug check covers both stacks and both TCBs; the new-task trampoline checks rsp alignment; and ISR/NMI FPU preservation is recorded as a requirement for #75. The self-test now checks both XMM lanes, the x87 stack, and the SYSCALL stack
+- 2026-11-24: Amended after CodeRabbit review (implemented with #72). Added the AMD FIP/FDP/FOP scrub before `fxrstor64`. The decision summary now lists the full `switch_to` safety contract. The identity-map assertion is described as a spot check and also probes `next`'s saved `rsp`. Added the rule that a cached root must outlive its tasks. The low-level switch requires an open depth-1 scope, not merely IF = 0. The self-test gives each XMM lane a distinct sentinel
