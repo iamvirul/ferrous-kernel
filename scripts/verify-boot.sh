@@ -232,6 +232,15 @@ EXPECTED_STRINGS=(
     "ELF loader smoke test (Phase 2.1.3)"
     "ELF loader smoke test complete"
 
+    # Phase 2.2.1 — run queue (runs before Step 17, which never returns)
+    "Run queue smoke test (Phase 2.2.1)"
+    "[OK] 19.1) IrqSpinLock: exclusive, IRQs masked while held, IF restored"
+    "[OK] 19.2) enqueue/dequeue: FIFO order preserved"
+    "[OK] 19.3) remove: middle task removed, order of others kept"
+    "[OK] 19.4) duplicate rejected; full at 256 tasks rejected"
+    "[OK] 19.5) is_empty after drain"
+    "[OK] Run queue smoke test complete"
+
     # Phase 2.1.4 — Kernel / User Mode Transition
     "Kernel/user mode transition smoke test (Phase 2.1.4)"
     "[OK] 17.1) GDT + TSS loaded (DPL=3 segments active)"
