@@ -90,12 +90,12 @@ The privileged kernel core consists of six major subsystems:
 - `RegisterState` (`repr(C)`) — callee-saved registers + rsp/rip/rflags; field layout fixed for context-switch assembly (Phase 2.2.3)
 - `TaskState` — Ready / Running / Blocked / Exiting / Zombie; transitions validated by atomic CAS
 - `Process` — fixed-capacity task list, atomic `ProcessState`, exit code; address-space and capability-space fields added in Phases 2.1.2 and 2.3.1 (`kernel/src/task/process.rs`)
-- `Scheduler` — scheduling policy implementation (Phase 2.2)
+- `Scheduler` — single-CPU strict FIFO round-robin with a fixed slice (`TIME_SLICE_TICKS = 10`). The policy is the pure, host-tested `ferrous_sched::RoundRobin`; the kernel owns a static task table (`TaskId` = slot) and switches only after releasing the scheduler lock (`kernel/src/sched/scheduler.rs`, Phase 2.2.2, ADR-0004)
 - `RunQueue` — fixed-capacity (256) FIFO ring buffer of `TaskId` handles (never TCBs); enqueue / dequeue / remove / is_empty, duplicate enqueue rejected; the scheduler must also never enqueue the running task, since the queue cannot see it (`lib/sched`, Phase 2.2.1). Single global queue today; per-CPU queues with SMP
 - `IrqSpinLock` — spinlock that masks interrupts while held; guards data shared with IRQ handlers, such as `SharedRunQueue`. A per-CPU nesting count (`ferrous_core::irq::IrqNesting`) restores IF only when the last guard drops, in any drop order (`kernel/src/sync`, Phase 2.2.1)
 - `ResourceGroup` — CPU time accounting and limits (Phase 2+)
 
-**Implementation status**: `TaskControlBlock` and `Process` defined (Phase 2.1.1 / PR #145). Run queue and `IrqSpinLock` implemented (Phase 2.2.1); context switch implemented (Phase 2.2.3, ADR-0008: `switch_to` with TSS.RSP0 and conditional CR3); scheduling policy (2.2.2) pending.
+**Implementation status**: `TaskControlBlock` and `Process` defined (Phase 2.1.1 / PR #145). Run queue and `IrqSpinLock` implemented (Phase 2.2.1); context switch implemented (Phase 2.2.3, ADR-0008: `switch_to` with TSS.RSP0 and conditional CR3); round-robin scheduler implemented (Phase 2.2.2, ADR-0004: `sched::scheduler` with `schedule`, `yield_now`, `block_current` / `wake`, `exit_current`, and the `scheduler_tick` + `preempt_if_needed` timer hook); live timer preemption pending #75.
 
 **Scheduling Decisions**:
 - All scheduling decisions generate observability events
