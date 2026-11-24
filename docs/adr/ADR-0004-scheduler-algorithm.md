@@ -1,6 +1,6 @@
 # ADR-0004: Scheduler Algorithm and Run Queue
 
-**Status:** Proposed  
+**Status:** Accepted  
 **Date:** 2026-11-24  
 **Deciders:** iamvirul  
 **Tags:** phase-2, scheduler, run-queue, preemption
@@ -228,3 +228,4 @@ switch. `scheduler_tick()` is O(1). Only `remove` of a queued task is O(n), boun
 ## Status History
 
 - 2026-11-24: Created (Status: Proposed); to be accepted before the Phase 2.2.2 implementation (#73) lands
+- 2026-11-24: Accepted (PR #171). Implemented in `lib/sched/src/round_robin.rs` and `kernel/src/sched/scheduler.rs`. Validated in QEMU by boot checks 21.1–21.4 (round-robin order, exact time-slice preemption via the tick hook, idle only when the queue is empty, block/wake/exit), each also mutation-tested. Live timer preemption is wired in #75
