@@ -19,6 +19,7 @@
 //!   (b) never `enqueue` the task that is currently running. A task that
 //!   has stopped running may be requeued as usual.
 
+pub mod scheduler;
 pub mod switch;
 mod switch_smoke;
 
