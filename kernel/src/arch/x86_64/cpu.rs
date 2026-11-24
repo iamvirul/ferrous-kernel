@@ -85,8 +85,8 @@ const RFLAGS_IF: u64 = 1 << 9;
 struct CpuIrqState(UnsafeCell<IrqNesting>);
 
 // SAFETY: the inner `IrqNesting` is only read or written by
-// `disable_interrupts` and `InterruptGuard::drop`, and both do so with
-// interrupts disabled on the only CPU. No IRQ handler can interleave. NMI
+// `disable_interrupts`, `irq_disable_depth`, and `exit_interrupt_scope`, all
+// with interrupts disabled on the only CPU. No IRQ handler can interleave. NMI
 // handlers never touch it: by `IrqSpinLock`'s rules they take no locks,
 // and nothing else uses this state.
 unsafe impl Sync for CpuIrqState {}
@@ -149,18 +149,49 @@ pub struct InterruptGuard {
 
 impl Drop for InterruptGuard {
     fn drop(&mut self) {
-        debug_assert!(
-            !interrupts_enabled(),
-            "IF was set while an InterruptGuard was alive"
-        );
-        // SAFETY: interrupts are still disabled: this scope is active, and
-        // only the last exit re-enables them, below.
-        let reenable = unsafe { (*CPU_IRQ_STATE.0.get()).exit() };
-        if reenable {
-            // SAFETY: this was the last active scope, and interrupts were
-            // enabled before the first one, so this restores the original
-            // state. Not `nomem`, so it acts as a compiler barrier.
-            unsafe { core::arch::asm!("sti", options(nostack)) };
-        }
+        // SAFETY: this guard's own scope is active, so exiting one is
+        // balanced.
+        unsafe { exit_interrupt_scope() };
+    }
+}
+
+/// Close the interrupt-disabled scope that a **new task** inherits from the
+/// task that switched to it.
+///
+/// `switch_to` runs inside the caller's `InterruptGuard` scope, which stays
+/// open across the switch. A resumed task closes one scope when it drops
+/// its own guard after `switch_to` returns. A *new* task has no guard, so
+/// its entry trampoline closes the inherited scope here, exactly once.
+/// This keeps the per-CPU nesting count balanced across every switch, and
+/// lets a new task run with the interrupt state that preceded the outermost
+/// scope (ADR-0008 §3).
+///
+/// # Safety
+///
+/// Call only from the new-task entry path, exactly once per task, while
+/// the inherited scope is still open (that is, before anything else).
+pub(crate) unsafe fn end_inherited_interrupt_scope() {
+    exit_interrupt_scope();
+}
+
+/// Leave one interrupt-disabled scope, re-enabling interrupts if it was the
+/// last one and they were on before the first.
+///
+/// # Safety
+///
+/// A scope must be active (one more `enter` than `exit` so far).
+unsafe fn exit_interrupt_scope() {
+    debug_assert!(
+        !interrupts_enabled(),
+        "IF was set while an interrupt-disabled scope was active"
+    );
+    // SAFETY: interrupts are still disabled: this scope is active, and only
+    // the last exit re-enables them, below.
+    let reenable = (*CPU_IRQ_STATE.0.get()).exit();
+    if reenable {
+        // SAFETY: this was the last active scope, and interrupts were
+        // enabled before the first one, so this restores the original state.
+        // Not `nomem`, so it acts as a compiler barrier.
+        core::arch::asm!("sti", options(nostack));
     }
 }
