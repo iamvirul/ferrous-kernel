@@ -97,8 +97,8 @@ ADR-0004 safe point. The interrupt-enable state of a task's outermost scope beco
 - **Every entry from ring 3** executes `swapgs`: SYSCALL (unchanged), and IRQs and
   exceptions whose frame shows CPL 3. **Every return to ring 3** does the same: SYSRET
   (unchanged), IRQ `iretq`, and the first entry in `jump_to_user_mode`, which now
-  executes `swapgs` before its `iretq`. Kernel-to-kernel entries and returns never
-  `swapgs`.
+  executes `swapgs` before its `iretq`. Kernel-to-kernel entries and returns of
+  **maskable** sources never `swapgs` (for non-maskable entries, see below).
 - Because ring-0 GS is the same for every task, **`switch_to` never touches GS**. This
   closes the review's failure path, where a timer preempted task A in ring 3 and resumed
   task B in the middle of a syscall with user GS still loaded. With the invariant, B
@@ -108,6 +108,30 @@ ADR-0004 safe point. The interrupt-enable state of a task's outermost scope beco
   restore `IA32_KERNEL_GS_BASE` per task.
 - The conditional `swapgs` is followed by `lfence` on both the swap and no-swap paths.
   That is the SWAPGS speculation mitigation (CVE-2019-1125).
+
+**Non-maskable entries: NMI, and later #MC / #DB** *(amended after review)*. The CS test
+above is only sound for entries that IF masks. There are short windows where the CPU is
+in ring 0 but GS is still the *user* value:
+- an IRQ stub between the CPU's delivery and its entry `swapgs`;
+- an IRQ stub between its return `swapgs` and `iretq`;
+- the SYSCALL stub between its `swapgs` and `sysretq`;
+- `jump_to_user_mode` between its `swapgs` and `iretq`.
+
+IF is 0 in all of them, so no IRQ can land there, but an NMI can. Its frame shows CPL 0,
+so a CS test would skip `swapgs`, and the handler would run with the user GS base. The
+rule is:
+- **Today, non-maskable handlers must not use GS.** The NMI handler (boot `__isr_2` →
+  `exception_handler`) reports the fault and halts. It never reads `gs:`, and it runs on
+  its own IST stack (ADR-0002), so the window is harmless. The other CPU exception stubs
+  likewise never `swapgs` and never use GS: they also report and halt.
+- **The debug GS assertion** (`cpu::kernel_gs_active`) is checked only on the maskable
+  paths (IRQ dispatch and SYSCALL entry), never in an NMI handler, which can legitimately
+  observe the user GS in these windows.
+- **When a non-maskable handler first needs per-CPU data**, or exceptions become
+  recoverable, it must use the *paranoid* entry instead of the CS test. That means
+  reading `IA32_GS_BASE` with `rdmsr`: `swapgs` on entry only if it does not equal
+  `&CpuLocal`, and on exit `swapgs` back only if it swapped on entry. This is the Linux
+  `paranoid_entry` scheme, and the CS-based rule above stays for maskable IRQs.
 - **Dispatcher (Rust, `extern "sysv64"`):**
   - **Timer (vector 32):** `TICKS += 1`; then, inside an `InterruptGuard`,
     `scheduler_tick()`; then the EOI; then, with no scope or lock held,
@@ -150,7 +174,11 @@ again. Tracing that path while designing this ADR is what exposed the flaw.
 
 ### 5. Enabling interrupts
 
-`cpu::enable_interrupts()` executes `sti` and sets a global **"interrupts live"** flag.
+`cpu::enable_interrupts()` first sets a global **"interrupts live"** flag (Release
+store), and **then** executes `sti` *(amended after review: order made explicit)*. The
+order matters: an IRQ can be delivered as soon as `sti` takes effect, and a switch it
+causes computes the incoming task's IF as `intent AND live` (§4). With the flag already
+set, every deliverable IRQ sees it, so no task can be started with IF = 0 in that window.
 It must be called at nesting depth 0, and only once the GDT/TSS, IDT stubs, PIC, PIT and
 scheduler are all initialised. Boot therefore:
 
@@ -291,3 +319,4 @@ ADR-0002 (GDT/TSS).
 
 - 2026-11-24: Created (Status: Proposed); to be accepted before the Phase 2.2.4 implementation (#75) lands
 - 2026-11-24: Amended after CodeRabbit review (still Proposed). Added the GS invariant (§3a: kernel GS in ring 0, `swapgs` on every ring-3 entry and exit, `switch_to` never touches GS). The per-task IF bit now saves intent (`outer OR NOT live`), so tasks switched out before enablement stay preemptible. The self-test's first-tick wait uses a TSC timeout that does not depend on IRQ0
+- 2026-11-25: Amended after the second CodeRabbit review (still Proposed). §3a now defines non-maskable entries: today NMI and exception handlers never use GS (they report and halt on an IST or the current stack); the GS assertion runs only on maskable paths; and a future GS-using NMI, #MC or #DB handler must use the paranoid `rdmsr IA32_GS_BASE` entry instead of the CS test. §5 states that "interrupts live" is published before `sti`, which is what `cpu::enable_interrupts` does
