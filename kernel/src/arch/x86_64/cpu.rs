@@ -2,6 +2,7 @@
 
 use core::cell::UnsafeCell;
 use core::marker::PhantomData;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use ferrous_core::irq::IrqNesting;
 
@@ -41,25 +42,67 @@ impl CpuLocal {
 /// (In Phase 2, we only support a single core).
 pub static mut CPU_LOCAL: CpuLocal = CpuLocal::new();
 
-/// Initialize the `KernelGsBase` MSR to point to the `CpuLocal` structure.
+/// `IA32_GS_BASE`: the active GS base.
+const MSR_GS_BASE: u32 = 0xC000_0101;
+/// `IA32_KERNEL_GS_BASE`: the value `swapgs` exchanges with `IA32_GS_BASE`.
+const MSR_KERNEL_GS_BASE: u32 = 0xC000_0102;
+/// User GS base for every task today: user code cannot set its own yet
+/// (CR4.FSGSBASE is off), so it is always 0 (ADR-0009 §3a).
+const USER_GS_BASE: u64 = 0;
+
+/// Establish the ring-0 GS invariant (ADR-0009 §3a): `GS_BASE` = this
+/// CPU's [`CpuLocal`], and `IA32_KERNEL_GS_BASE` = the user GS.
+///
+/// Every entry from ring 3 (SYSCALL, IRQs) then `swapgs`es into the kernel
+/// GS, and every return to ring 3 `swapgs`es back, so ring-0 code always
+/// sees the kernel GS and the context switch never has to touch it.
 ///
 /// # Safety
 ///
-/// Must be called once per CPU core during early initialization, at CPL=0.
+/// - Once per CPU, at CPL 0, during early initialisation.
+/// - **After** `gdt::init`: loading the GS selector there resets `GS_BASE`
+///   to the descriptor base (0), which would undo this.
 pub unsafe fn init() {
     let cpu_local_addr = core::ptr::addr_of!(CPU_LOCAL) as u64;
+    wrmsr(MSR_GS_BASE, cpu_local_addr);
+    wrmsr(MSR_KERNEL_GS_BASE, USER_GS_BASE);
+}
 
-    // IA32_KERNEL_GS_BASE MSR is 0xC0000102
-    const MSR_KERNEL_GS_BASE: u32 = 0xC000_0102;
+/// `true` if the ring-0 GS invariant holds right now: `GS_BASE` is this
+/// CPU's [`CpuLocal`] (ADR-0009 §3a). Maskable kernel entry points (IRQ
+/// dispatch, SYSCALL) check it, so a missing or doubled `swapgs` fails at
+/// the next entry instead of corrupting memory later.
+///
+/// Never assert this in an NMI, #MC or #DB handler: those can legitimately
+/// arrive in the ring-0 windows around `swapgs` where the user GS is still
+/// loaded.
+pub fn kernel_gs_active() -> bool {
+    let lo: u32;
+    let hi: u32;
+    // SAFETY: reading IA32_GS_BASE at CPL 0 has no side effects.
+    unsafe {
+        core::arch::asm!(
+            "rdmsr",
+            in("ecx") MSR_GS_BASE,
+            out("eax") lo,
+            out("edx") hi,
+            options(nomem, nostack, preserves_flags),
+        );
+    }
+    ((u64::from(hi) << 32) | u64::from(lo)) == core::ptr::addr_of!(CPU_LOCAL) as u64
+}
 
-    let low = (cpu_local_addr & 0xFFFF_FFFF) as u32;
-    let high = (cpu_local_addr >> 32) as u32;
-
+/// Write a 64-bit MSR.
+///
+/// # Safety
+///
+/// CPL 0; `msr` must exist and accept `value` (otherwise `wrmsr` #GPs).
+unsafe fn wrmsr(msr: u32, value: u64) {
     core::arch::asm!(
         "wrmsr",
-        in("ecx") MSR_KERNEL_GS_BASE,
-        in("eax") low,
-        in("edx") high,
+        in("ecx") msr,
+        in("eax") value as u32,
+        in("edx") (value >> 32) as u32,
         options(nostack, preserves_flags),
     );
 }
@@ -76,8 +119,57 @@ pub fn halt_forever() -> ! {
     }
 }
 
-/// RFLAGS.IF — interrupt enable flag (bit 9).
-const RFLAGS_IF: u64 = 1 << 9;
+/// RFLAGS.IF — interrupt enable flag (bit 9). Also the bit `switch_to`
+/// uses in `RegisterState.rflags` for a task's interrupt intent.
+pub const RFLAGS_IF: u64 = 1 << 9;
+
+/// Set once by [`enable_interrupts`]: the system takes interrupts from then
+/// on. Before it, every task runs with IF = 0 whatever its intent.
+static INTERRUPTS_LIVE: AtomicBool = AtomicBool::new(false);
+
+/// `true` once [`enable_interrupts`] has run.
+pub fn interrupts_live() -> bool {
+    INTERRUPTS_LIVE.load(Ordering::Acquire)
+}
+
+/// Turn interrupts on for the system: set the "live" flag and `sti`.
+///
+/// # Safety
+///
+/// - Nesting depth 0 (no `InterruptGuard` alive), checked.
+/// - GDT/TSS, IDT gates for every unmasked source, the interrupt
+///   controller and its sources, and the scheduler are all initialised.
+/// - Called once.
+pub unsafe fn enable_interrupts() {
+    assert_eq!(
+        irq_disable_depth(),
+        0,
+        "enable_interrupts inside an interrupt-disabled scope"
+    );
+    assert!(!interrupts_live(), "enable_interrupts called twice");
+    // Publish "live" *before* `sti`: an IRQ can arrive as soon as `sti`
+    // takes effect, and a switch it causes computes the incoming task's IF
+    // as `intent AND live` (ADR-0009 §4, §5). Setting the flag first means
+    // no task can be started with IF = 0 in that window.
+    INTERRUPTS_LIVE.store(true, Ordering::Release);
+    // SAFETY: the caller guarantees every enabled source has a handler.
+    core::arch::asm!("sti", options(nostack));
+}
+
+/// Swap the per-CPU "interrupts were enabled before the outermost scope"
+/// bit: install `incoming` and return the outgoing value. Used only by
+/// `switch_to` to make that bit per task (ADR-0009 §4).
+///
+/// # Panics
+///
+/// If no interrupt-disabled scope is open (the switch guard must be).
+pub(crate) fn exchange_outermost_enabled(incoming: bool) -> bool {
+    let _scope = disable_interrupts();
+    // SAFETY: interrupts are disabled (see `CpuIrqState`). The scope just
+    // opened is nested *inside* the switch guard, so the outermost bit we
+    // replace is the switch guard's, not this one's.
+    unsafe { (*CPU_IRQ_STATE.0.get()).replace_outermost_enabled(incoming) }
+}
 
 /// This CPU's interrupt-disable nesting state.
 ///

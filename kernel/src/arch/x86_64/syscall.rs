@@ -198,6 +198,10 @@ pub struct SyscallArgs {
 /// the platform-independent [`crate::syscall`] layer.
 #[no_mangle]
 extern "sysv64" fn syscall_dispatcher(args: &mut SyscallArgs) {
+    debug_assert!(
+        super::cpu::kernel_gs_active(),
+        "SYSCALL entered ring 0 without the kernel GS (swapgs imbalance)"
+    );
     let raw = [args.rdi, args.rsi, args.rdx, args.r10, args.r8, args.r9];
     // SAFETY: we are on the SYSCALL entry path: CPL 0, IF cleared by
     // SFMASK, kernel stack active (stub switched via gs:[0]), and CR3 still
@@ -238,12 +242,14 @@ pub unsafe fn jump_to_user_mode(rip: u64, rsp: u64) -> ! {
         "mov ds, cx",
         "mov es, cx",
 
-        // No SWAPGS here. cpu::init() already placed CPU_LOCAL into
-        // IA32_KERNEL_GS_BASE and GS.Base is 0 (kernel data segment base).
-        // The state is already correct:
-        //   GS.Base            = 0          (becomes user's GS after IRETQ)
-        //   IA32_KERNEL_GS_BASE = CPU_LOCAL  (SWAPGS in SYSCALL stub will load this)
-        // Calling SWAPGS here would invert both, breaking SYSCALL entry.
+        // GS invariant (ADR-0009 §3a): in ring 0 GS.Base = CPU_LOCAL and
+        // IA32_KERNEL_GS_BASE = user GS. Entering ring 3 must swap them, so
+        // user code runs with its own GS and the next SYSCALL / IRQ entry
+        // `swapgs` restores the kernel GS. Interrupts are masked here (the
+        // iretq below re-enables them), so nothing observes the swapped
+        // state in ring 0.
+        "cli",
+        "swapgs",
 
         // Push the IRET frame
         "push rcx",      // SS

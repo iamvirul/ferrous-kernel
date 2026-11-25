@@ -259,6 +259,16 @@ EXPECTED_STRINGS=(
     "[OK] 21.4) block/wake/exit verified; a lone yield performs no context switch"
     "[OK] Scheduler smoke test complete"
 
+    # Phase 2.2.4 — timer interrupts; interrupts stay on from here onward
+    "Timer interrupt smoke test (Phase 2.2.4)"
+    "[OK] 22.0) kernel GDT/TSS + GS invariant loaded before enabling interrupts"
+    "[OK] 22.1) PIC remapped to vectors 32-47; masks master=0xfe slave=0xff (only IRQ0 open)"
+    "[OK] 22.2) timer ticking at 100 Hz (PIT divisor 11932)"
+    "[OK] 22.3) hlt woken by the timer: 10 ticks elapsed while halted"
+    "[OK] 22.4) real preemption: 2 non-yielding tasks preempted by the timer"
+    "[OK] 22.5) per-task interrupt intent: idle, last switched out pre-enable, now runs with IF=1"
+    "[OK] Timer interrupt smoke test complete"
+
     # Phase 2.1.4 — Kernel / User Mode Transition
     "Kernel/user mode transition smoke test (Phase 2.1.4)"
     "[OK] 17.1) GDT + TSS loaded (DPL=3 segments active)"
@@ -272,6 +282,14 @@ EXPECTED_STRINGS=(
     "System call interface smoke test (Phase 2.1.5)"
     "[OK] 18.1) Ring-3 syscall test program loaded"
     "sys_exit: process exited with code 0"
+)
+
+# Extended regular expressions that must match (for values that vary).
+EXPECTED_PATTERNS=(
+    # Phase 2.2.4: the ring-3 program must actually be interrupted by the
+    # timer (a non-zero count), so the IRQ swapgs path is exercised before
+    # its final syscalls (ADR-0009 §3a).
+    "sys_exit: process exited with code 0 \\([1-9][0-9]* timer IRQs taken from ring 3\\)"
 )
 
 # sys_log output is compiled out of release kernels (ADR-0007), so the
@@ -344,6 +362,12 @@ run_and_verify() {
             break
         fi
     done
+    for r in "${EXPECTED_PATTERNS[@]}"; do
+        if ! grep -qE "$r" "$SERIAL_LOG" 2>/dev/null; then
+            ALL_FOUND=0
+            break
+        fi
+    done
 
     return $((1 - ALL_FOUND))
 }
@@ -365,6 +389,14 @@ report_results() {
             pass "\"$s\""
         else
             fail "\"$s\" — NOT FOUND"
+            all_passed=1
+        fi
+    done
+    for r in "${EXPECTED_PATTERNS[@]}"; do
+        if grep -qE "$r" "$serial_log" 2>/dev/null; then
+            pass "/$r/"
+        else
+            fail "/$r/ — NOT MATCHED"
             all_passed=1
         fi
     done

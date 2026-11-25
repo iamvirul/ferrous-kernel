@@ -95,7 +95,7 @@ The privileged kernel core consists of six major subsystems:
 - `IrqSpinLock` — spinlock that masks interrupts while held; guards data shared with IRQ handlers, such as `SharedRunQueue`. A per-CPU nesting count (`ferrous_core::irq::IrqNesting`) restores IF only when the last guard drops, in any drop order (`kernel/src/sync`, Phase 2.2.1)
 - `ResourceGroup` — CPU time accounting and limits (Phase 2+)
 
-**Implementation status**: `TaskControlBlock` and `Process` defined (Phase 2.1.1 / PR #145). Run queue and `IrqSpinLock` implemented (Phase 2.2.1); context switch implemented (Phase 2.2.3, ADR-0008: `switch_to` with TSS.RSP0 and conditional CR3); round-robin scheduler implemented (Phase 2.2.2, ADR-0004: `sched::scheduler` with `schedule`, `yield_now`, `block_current` / `wake`, `exit_current`, and the `scheduler_tick` + `preempt_if_needed` timer hook); live timer preemption pending #75.
+**Implementation status**: `TaskControlBlock` and `Process` defined (Phase 2.1.1 / PR #145). Run queue and `IrqSpinLock` implemented (Phase 2.2.1); context switch implemented (Phase 2.2.3, ADR-0008: `switch_to` with TSS.RSP0 and conditional CR3); round-robin scheduler implemented (Phase 2.2.2, ADR-0004: `sched::scheduler` with `schedule`, `yield_now`, `block_current` / `wake`, `exit_current`, and the `scheduler_tick` + `preempt_if_needed` timer hook); timer interrupts live (Phase 2.2.4, ADR-0009: 8259 PIC remapped to 32–47, 8254 PIT at 100 Hz, IRQ0 drives `scheduler_tick` then `preempt_if_needed`; ring-0 GS always holds `CpuLocal`; per-task interrupt intent saved by `switch_to`).
 
 **Scheduling Decisions**:
 - All scheduling decisions generate observability events

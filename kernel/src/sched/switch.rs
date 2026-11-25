@@ -6,7 +6,8 @@
 //! 1. points `TSS.RSP0` at the incoming task's kernel stack (every switch);
 //! 2. loads the incoming task's CR3, but only if it differs from the
 //!    current one (same-process switches skip the TLB flush);
-//! 3. runs the `arch` assembly that saves and restores the integer and
+//! 3. saves `prev`'s interrupt intent and installs `next`'s (ADR-0009 §4);
+//! 4. runs the `arch` assembly that saves and restores the integer and
 //!    x87/SSE state and swaps stacks.
 //!
 //! Steps 1 and 2 run before the stack switch. That is safe because every
@@ -60,6 +61,9 @@ pub unsafe fn init_kernel_task_context(tcb: &mut TaskControlBlock, entry: fn() -
         rip: context::task_entry_trampoline_addr(),
         r12: entry as usize as u64,
         rbp: 0,
+        // Interrupt intent (ADR-0009 §4): a new task wants interrupts on;
+        // it gets them as soon as the system has them live.
+        rflags: cpu::RFLAGS_IF,
         ..RegisterState::default()
     };
     tcb.fpu = FpuState::initial();
@@ -115,7 +119,7 @@ pub unsafe fn switch_to(
 
     // Everything we need from `next`, read through short-lived borrows that
     // end before the switch.
-    let (next_stack_top, next_root) = {
+    let (next_stack_top, next_root, next_wants_interrupts) = {
         // SAFETY: valid per the caller contract; the borrow ends at the end
         // of this block, before any suspension.
         let next_ref = &*next;
@@ -131,7 +135,11 @@ pub unsafe fn switch_to(
             next_ref.id,
             next_ref.registers.rsp
         );
-        (next_ref.stack_top() as u64, next_ref.page_table_root())
+        (
+            next_ref.stack_top() as u64,
+            next_ref.page_table_root(),
+            next_ref.registers.rflags & cpu::RFLAGS_IF != 0,
+        )
     };
 
     // 1. Both kernel-entry stacks must be `next`'s own:
@@ -160,7 +168,26 @@ pub unsafe fn switch_to(
         CR3_LOADS.fetch_add(1, Ordering::Relaxed);
     }
 
-    // 3. Registers (integer and x87/SSE) and stack. Field pointers come
+    // 3. Interrupt state follows the task (ADR-0009 §4). Install `next`'s
+    //    intent (AND "live": nothing runs with IF = 1 before interrupts are
+    //    enabled) as the per-CPU outermost bit, and save `prev`'s intent.
+    //    Before interrupts are live every task intends to have them, so a
+    //    boot-time 0 is not recorded as the task's own wish; after that the
+    //    bit is accurate (0 inside an ISR, 1 in normal code).
+    let live = cpu::interrupts_live();
+    let prev_outer = cpu::exchange_outermost_enabled(next_wants_interrupts && live);
+    let prev_intent = prev_outer || !live;
+    // SAFETY: `prev` is valid (contract); written by value through a raw
+    // place, with no reference taken.
+    unsafe {
+        core::ptr::addr_of_mut!((*prev).registers.rflags).write(if prev_intent {
+            cpu::RFLAGS_IF
+        } else {
+            0
+        });
+    }
+
+    // 4. Registers (integer and x87/SSE) and stack. Field pointers come
     //    from `addr_of_mut!` / `addr_of!`, so no reference outlives this line.
     // SAFETY: interrupts are disabled (`_irq`); the pointers are valid and
     // distinct (contract, asserted above); `next` is resumable (contract and

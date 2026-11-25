@@ -1,6 +1,6 @@
 # ADR-0009: Timer Interrupts and Preemption (PIC + PIT)
 
-**Status:** Proposed  
+**Status:** Accepted  
 **Date:** 2026-11-24  
 **Deciders:** iamvirul  
 **Tags:** phase-2, interrupts, timer, pic, pit, preemption
@@ -320,3 +320,4 @@ ADR-0002 (GDT/TSS).
 - 2026-11-24: Created (Status: Proposed); to be accepted before the Phase 2.2.4 implementation (#75) lands
 - 2026-11-24: Amended after CodeRabbit review (still Proposed). Added the GS invariant (§3a: kernel GS in ring 0, `swapgs` on every ring-3 entry and exit, `switch_to` never touches GS). The per-task IF bit now saves intent (`outer OR NOT live`), so tasks switched out before enablement stay preemptible. The self-test's first-tick wait uses a TSC timeout that does not depend on IRQ0
 - 2026-11-25: Amended after the second CodeRabbit review (still Proposed). §3a now defines non-maskable entries: today NMI and exception handlers never use GS (they report and halt on an IST or the current stack); the GS assertion runs only on maskable paths; and a future GS-using NMI, #MC or #DB handler must use the paranoid `rdmsr IA32_GS_BASE` entry instead of the CS test. §5 states that "interrupts live" is published before `sti`, which is what `cpu::enable_interrupts` does
+- 2026-11-25: Accepted (PR #173). Implemented in `kernel/src/arch/x86_64/{port,pic,pit,interrupts}.rs`, `cpu.rs` (GS invariant, interrupts-live flag, outermost IF exchange), and `sched/switch.rs` (per-task IF intent). Validated in QEMU by boot checks 22.0–22.5 and by timer IRQs taken in ring 3 (a non-zero count is required by `verify-boot.sh`). Each mechanism was mutation-tested

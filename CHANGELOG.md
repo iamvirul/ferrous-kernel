@@ -226,6 +226,51 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   then `preempt_if_needed`). Pending #74: the production idle body (HLT
   with interrupts enabled)
 
+#### Phase 2.2.4 - Timer Interrupts and Preemption (ADR-0009)
+- `arch::x86_64::port`: the single audited `inb` / `outb` / `io_wait`
+  wrapper
+- `arch::x86_64::pic`: 8259 pair remapped to vectors 32–47 with only IRQ0
+  unmasked. EOI helpers, and spurious IRQ7/IRQ15 detected through the
+  in-service register
+- `arch::x86_64::pit`: channel 0 in mode 2 at `TIMER_HZ = 100` (divisor
+  11932, range-checked at compile time)
+- `arch::x86_64::interrupts`:
+  - one asm stub per PIC line, plus `irq_dispatch`;
+  - the timer path charges a tick, sends EOI, then `preempt_if_needed()`;
+  - `ticks()` uptime, plus preemption, spurious, unexpected and
+    user-mode IRQ counters;
+  - a build-time `compile_error!` if the kernel is ever built with SSE,
+    because the stubs skip FXSAVE on the soft-float assumption
+- **GS invariant:** ring-0 `GS_BASE` is always `CpuLocal`. `cpu::init`
+  sets it (after `gdt::init`); IRQ stubs `swapgs` + `lfence` only on ring-3
+  entry and exit; `jump_to_user_mode` runs `swapgs` before `iretq`.
+  `switch_to` never touches GS. Debug builds check the invariant on every
+  IRQ and syscall entry (`cpu::kernel_gs_active`)
+- **Per-task interrupt intent:** `switch_to` saves `prev`'s intent
+  (`outer OR NOT live`) in `RegisterState.rflags.IF` and installs `next`'s
+  (`AND live`), using `IrqNesting::replace_outermost_enabled`. New tasks
+  are created with IF set
+- `cpu::enable_interrupts()` sets a global "interrupts live" flag and runs
+  `sti` (depth 0, once)
+- Boot loads the GDT/TSS and GS once, early, then installs the IRQ gates,
+  initialises the PIC and PIT, and enables interrupts. Step 17 no longer
+  reloads them
+- Boot smoke test 22.0–22.5:
+  - PIC masks read back;
+  - the first ticks arrive within a TSC-bounded wait (independent of
+    IRQ0);
+  - `hlt` is woken by the timer;
+  - two non-yielding tasks are preempted by the real timer, with IF = 1;
+  - the idle task (switched out before enablement) runs with IF = 1.
+- The ring-3 test program now spins long enough to take timer IRQs.
+  `verify-boot.sh` requires a non-zero ring-3 IRQ count, through new
+  regex expectations (`EXPECTED_PATTERNS`)
+- Mutation-tested: dropping the IF-intent fix, the per-task exchange, the
+  timer EOI, or the ring-3 exit `swapgs` each fails the boot. The last was
+  initially *missed*: GS flips parity per IRQ and low memory stays
+  writable, so it was caught only once the entry-point GS assertions were
+  added
+
 #### Documentation and Tooling
 - README badges: CI, Release, CodeQL, latest release version, license,
   Rust language, and architecture
