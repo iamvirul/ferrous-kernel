@@ -69,9 +69,13 @@ pub unsafe fn init() {
 }
 
 /// `true` if the ring-0 GS invariant holds right now: `GS_BASE` is this
-/// CPU's [`CpuLocal`] (ADR-0009 §3a). Kernel entry points check it, so a
-/// missing or doubled `swapgs` fails at the next entry instead of
-/// corrupting memory later.
+/// CPU's [`CpuLocal`] (ADR-0009 §3a). Maskable kernel entry points (IRQ
+/// dispatch, SYSCALL) check it, so a missing or doubled `swapgs` fails at
+/// the next entry instead of corrupting memory later.
+///
+/// Never assert this in an NMI, #MC or #DB handler: those can legitimately
+/// arrive in the ring-0 windows around `swapgs` where the user GS is still
+/// loaded.
 pub fn kernel_gs_active() -> bool {
     let lo: u32;
     let hi: u32;
@@ -143,6 +147,10 @@ pub unsafe fn enable_interrupts() {
         "enable_interrupts inside an interrupt-disabled scope"
     );
     assert!(!interrupts_live(), "enable_interrupts called twice");
+    // Publish "live" *before* `sti`: an IRQ can arrive as soon as `sti`
+    // takes effect, and a switch it causes computes the incoming task's IF
+    // as `intent AND live` (ADR-0009 §4, §5). Setting the flag first means
+    // no task can be started with IF = 0 in that window.
     INTERRUPTS_LIVE.store(true, Ordering::Release);
     // SAFETY: the caller guarantees every enabled source has a handler.
     core::arch::asm!("sti", options(nostack));

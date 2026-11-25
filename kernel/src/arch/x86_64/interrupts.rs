@@ -12,6 +12,12 @@
 //! speculation, CVE-2019-1125). The context switch therefore never has to
 //! touch GS.
 //!
+//! The CS test is sound only for these *maskable* IRQs. An NMI can land in
+//! the few instructions where the CPU is in ring 0 with the user GS still
+//! loaded (around each `swapgs`). Non-maskable handlers must therefore not
+//! use GS, or, once they need per-CPU data, must use the paranoid
+//! `rdmsr IA32_GS_BASE` entry instead (ADR-0009 §3a).
+//!
 //! # FPU
 //!
 //! The stubs do not save x87/SSE state: the kernel is soft-float, so no
