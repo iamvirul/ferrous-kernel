@@ -58,7 +58,10 @@ fn exit_code_from_arg(raw: u64) -> i32 {
 /// recording the exit the CPU halts. Phase 2.2 replaces the halt with
 /// "mark the process Exiting and schedule the next task".
 fn sys_exit(code: i32) -> ! {
-    log::info!("sys_exit: process exited with code {code}");
+    log::info!(
+        "sys_exit: process exited with code {code} ({} timer IRQs taken from ring 3)",
+        crate::arch::x86_64::interrupts::user_mode_irqs()
+    );
     halt_forever()
 }
 

@@ -23,9 +23,11 @@ pub mod scheduler;
 mod scheduler_smoke;
 pub mod switch;
 mod switch_smoke;
+mod timer_smoke;
 
 pub use scheduler_smoke::smoke_test as scheduler_smoke_test;
 pub use switch_smoke::smoke_test as switch_smoke_test;
+pub use timer_smoke::smoke_test as timer_smoke_test;
 
 use crate::sync::IrqSpinLock;
 use crate::task::TaskId;

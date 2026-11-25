@@ -1833,6 +1833,23 @@ extern "sysv64" fn kernel_main(boot_info: &'static KernelBootInfo) -> ! {
             };
             serial_write_str("[OK] Scheduler smoke test complete\r\n");
 
+            // Phase 2.2.4 — timer interrupts (ADR-0009). Load the kernel
+            // GDT/TSS and the GS invariant once, install the IRQ gates,
+            // program the PIC and PIT, and turn interrupts on for good.
+            // Everything after this point runs with the timer preempting.
+            serial_write_str("\r\n[...] Timer interrupt smoke test (Phase 2.2.4)\r\n");
+            // SAFETY: boot context, CPL 0, interrupts still off, scheduler
+            // initialised above, called exactly once.
+            unsafe {
+                early_cpu_setup();
+                install_irq_gates();
+                ferrous_kernel::arch::x86_64::pic::init();
+                ferrous_kernel::arch::x86_64::pit::init();
+                ferrous_kernel::arch::x86_64::cpu::enable_interrupts();
+                ferrous_kernel::sched::timer_smoke_test();
+            }
+            serial_write_str("[OK] Timer interrupt smoke test complete\r\n");
+
             // ---------------------------------------------------------------
             // Step 17: Kernel / User Mode Transition smoke test (Phase 2.1.4)
             //
@@ -1906,6 +1923,9 @@ const KERNEL_IDENTITY_VA: u64 = 0x0010_0000;
 const KERNEL_HIGH_VA: u64 = 0xFFFF_8000_0000_0000;
 /// A syscall number that is not assigned.
 const UNASSIGNED_SYSCALL: u64 = 0xFFFF;
+/// Ring-3 busy-wait length (check 14), long enough for several timer
+/// ticks to interrupt user mode under QEMU.
+const USER_SPIN_ITERATIONS: u32 = 10_000_000;
 
 extern "C" {
     /// First byte of the ring-3 test program (defined in global_asm! below).
@@ -2029,6 +2049,15 @@ global_asm!(
     "test rax, rax",
     "mov edi, 13",
     "jnz 80f",
+    // 14. Stay in ring 3 long enough for timer interrupts to land here
+    //     (interrupts are live). Each one takes the stub's swapgs entry and
+    //     exit path; the syscalls below would fault on gs:[8] if that left
+    //     the wrong GS (ADR-0009 §3a).
+    "mov ecx, {user_spin}",
+    "3:",
+    "pause",
+    "dec ecx",
+    "jnz 3b",
     // All checks passed: log success and exit with code 0.
     "mov eax, {log}",
     "lea rdi, [rip + __user_smoke_done]",
@@ -2062,7 +2091,64 @@ global_asm!(
     unmapped = const USER_UNMAPPED_VA,
     code_page_tail = const USER_CODE_VA + USER_PAGE_SIZE - 4,
     too_long = const ferrous_syscall::LOG_MAX_LEN + 1,
+    user_spin = const USER_SPIN_ITERATIONS,
 );
+
+// ---------------------------------------------------------------------------
+// Phase 2.2.4 — early CPU setup and IRQ gates
+// ---------------------------------------------------------------------------
+
+/// Load the kernel GDT/TSS (DPL=3 segments, TSS descriptor, NMI IST) and
+/// establish the ring-0 GS invariant, once, before interrupts are enabled
+/// (ADR-0009 §5). `ltr` faults if repeated, so this runs exactly once.
+///
+/// # Safety
+///
+/// CPL 0, interrupts disabled, called exactly once.
+unsafe fn early_cpu_setup() {
+    use ferrous_kernel::arch::x86_64;
+
+    x86_64::gdt::init();
+
+    // Deliver NMIs on a dedicated kernel stack (IST). NMIs ignore IF, so one
+    // can land in the SYSCALL entry/exit windows where CPL is 0 but RSP is
+    // still the user stack; with IST=0 the CPU would push onto that stack.
+    // The TSS slot is written before the gate references it, and the TSS is
+    // already loaded (LTR above), so there is no window with a dangling IST.
+    #[allow(static_mut_refs)]
+    {
+        let nmi_stack_top =
+            (core::ptr::addr_of!(NMI_IST_STACK) as usize + NMI_IST_STACK_SIZE) as u64;
+        let mut ist = x86_64::gdt::TSS.ist;
+        ist[usize::from(x86_64::tss::NMI_IST_INDEX) - 1] = nmi_stack_top;
+        x86_64::gdt::TSS.ist = ist;
+        IDT.0[NMI_VECTOR].ist = x86_64::tss::NMI_IST_INDEX;
+    }
+
+    // After gdt::init: loading the GS selector there resets GS_BASE.
+    x86_64::cpu::init();
+    serial_write_str(
+        "[OK] 22.0) kernel GDT/TSS + GS invariant loaded before enabling interrupts\r\n",
+    );
+}
+
+/// Point IDT vectors 32–47 at the kernel's PIC IRQ stubs (until now they
+/// hit the halting generic stub).
+///
+/// # Safety
+///
+/// Interrupts disabled (the IDT is being modified in place).
+unsafe fn install_irq_gates() {
+    use ferrous_kernel::arch::x86_64::{interrupts, pic};
+
+    let base = pic::PIC1_VECTOR_BASE;
+    for vector in base..base + pic::IRQ_LINES {
+        #[allow(static_mut_refs)]
+        {
+            IDT.0[usize::from(vector)] = IdtEntry::new(interrupts::irq_stub_address(vector));
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Phase 2.1.4 — Kernel / User Mode Transition Smoke Test
@@ -2082,8 +2168,13 @@ unsafe fn kernel_user_mode_smoke_test() {
     use ferrous_kernel::arch::x86_64;
     use ferrous_kernel::memory::{address_space, frame_allocator};
 
-    // Step 17.1 — Load the kernel GDT (adds DPL=3 segments and a TSS descriptor).
-    x86_64::gdt::init();
+    // Step 17.1 — The kernel GDT/TSS (DPL=3 segments, TSS descriptor, NMI
+    // IST) and the GS invariant were set up once, early, by
+    // `early_cpu_setup` (Phase 2.2.4, ADR-0009 §5): interrupts are live by
+    // now, so `ltr` must not run again.
+    //
+    // Interrupts are on: update the kernel-entry stacks atomically.
+    let entry_stack_scope = x86_64::cpu::disable_interrupts();
 
     // Point TSS.RSP0 at the current kernel stack so that hardware will restore
     // it on privilege changes triggered by exceptions in ring-3.
@@ -2098,24 +2189,9 @@ unsafe fn kernel_user_mode_smoke_test() {
         x86_64::gdt::TSS.rsp0 = kernel_rsp;
     }
 
-    // Deliver NMIs on a dedicated kernel stack (IST). NMIs ignore IF, so one
-    // can land in the SYSCALL entry/exit windows where CPL is 0 but RSP is
-    // still the user stack; with IST=0 the CPU would push onto that stack.
-    // The TSS slot is written before the gate references it, and the TSS is
-    // already loaded (LTR above), so there is no window with a dangling IST.
-    #[allow(static_mut_refs)]
-    {
-        let nmi_stack_top =
-            (core::ptr::addr_of!(NMI_IST_STACK) as usize + NMI_IST_STACK_SIZE) as u64;
-        let mut ist = x86_64::gdt::TSS.ist;
-        ist[usize::from(x86_64::tss::NMI_IST_INDEX) - 1] = nmi_stack_top;
-        x86_64::gdt::TSS.ist = ist;
-        IDT.0[NMI_VECTOR].ist = x86_64::tss::NMI_IST_INDEX;
-    }
     serial_write_str("[OK] 17.1) GDT + TSS loaded (DPL=3 segments active)\r\n");
 
-    // Step 17.2 — Initialise CPU-local GS base and SYSCALL/SYSRET MSRs.
-    x86_64::cpu::init();
+    // Step 17.2 — SYSCALL/SYSRET MSRs (the GS invariant is already in place).
     // Set the kernel stack pointer in CpuLocal so the SYSCALL entry stub can
     // switch to it via `mov rsp, gs:[0]`.
     #[allow(static_mut_refs)]
@@ -2123,6 +2199,7 @@ unsafe fn kernel_user_mode_smoke_test() {
         x86_64::cpu::CPU_LOCAL.kernel_stack = kernel_rsp;
     }
     x86_64::syscall::init();
+    drop(entry_stack_scope);
     serial_write_str("[OK] 17.2) SYSCALL MSRs initialised\r\n");
 
     // Step 17.3 — Map one user code page and one user stack page.

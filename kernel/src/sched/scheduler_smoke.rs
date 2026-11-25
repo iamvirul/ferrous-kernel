@@ -113,10 +113,24 @@ fn runs(events: &[u8], out: &mut [(u8, usize); 16]) -> usize {
 // Task bodies
 // ---------------------------------------------------------------------------
 
+/// Whether interrupts were enabled the last time the test idle task ran.
+/// Idle last switched out *before* interrupts went live, so this proves its
+/// saved intent was not frozen at the boot-time IF = 0 (ADR-0009 §4).
+static IDLE_SAW_INTERRUPTS_ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// See [`IDLE_SAW_INTERRUPTS_ENABLED`].
+pub(super) fn idle_saw_interrupts_enabled() -> bool {
+    IDLE_SAW_INTERRUPTS_ENABLED.load(Ordering::Relaxed)
+}
+
 /// Idle (test variant): runs only when the queue is empty. It records 'I',
 /// wakes boot (as an interrupt would in production), then yields to it.
 fn test_idle() -> ! {
     loop {
+        IDLE_SAW_INTERRUPTS_ENABLED.store(
+            crate::arch::x86_64::cpu::interrupts_enabled(),
+            Ordering::Relaxed,
+        );
         assert_eq!(runnable_count(), 0, "idle ran while tasks were runnable");
         record(b'I');
         wake(BOOT_TASK).expect("boot is blocked while workers run");
