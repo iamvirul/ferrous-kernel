@@ -179,9 +179,9 @@ Every milestone must advance these core goals:
 | Task | Issue | Status | Priority |
 |------|-------|--------|----------|
 | 2.2.1 Runnable Task Queue | #71 | Complete | Critical |
-| 2.2.2 Basic Round-Robin Scheduler | #73 | In Progress (scheduler done, ADR-0004; live timer preemption lands with #75) | Critical |
+| 2.2.2 Basic Round-Robin Scheduler | #73 | Complete (ADR-0004; timer preemption live with #75) | Critical |
 | 2.2.3 Context Switching (assembly + Rust) | #72 | Complete (ADR-0008) | Critical |
-| 2.2.4 Timer Interrupts (PIT/APIC) | #75 | Not Started | High |
+| 2.2.4 Timer Interrupts (PIT/APIC) | #75 | Complete (ADR-0009: PIC + PIT at 100 Hz; LAPIC timer is Phase 3) | High |
 | 2.2.5 Idle Task | #74 | Not Started | High |
 
 **Dependencies:** 2.1.1 (task structures) must be complete.
