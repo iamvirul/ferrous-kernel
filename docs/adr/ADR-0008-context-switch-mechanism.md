@@ -75,10 +75,16 @@ Offsets are written as `const` operands computed with `core::mem::offset_of!`, n
 literals. A compile-time assertion pins `size_of::<RegisterState>()`. A field reorder
 therefore either updates the assembly automatically or fails the build.
 
-**`rflags` is not switched.** Every switch happens with interrupts disabled (see §3), and
-the other flags carry no state across a call boundary in the System V ABI (DF must already
-be clear). The `rflags` field stays for the future IRETQ return-to-user frame (ADR-0002),
-not for this routine.
+**`rflags` holds the task's interrupt intent, not live flags** *(amended by ADR-0009 §4)*.
+The assembly never loads or stores RFLAGS. Every switch runs with interrupts disabled
+(§3), and the other flags carry no state across a call boundary in the System V ABI (DF
+must already be clear). The Rust wrapper `switch_to` uses only the IF bit of
+`RegisterState.rflags`, before the assembly runs:
+
+- it saves the outgoing task's intent as `prev.rflags.IF = outer_enabled OR NOT live`;
+- it installs `next.rflags.IF AND live` as the per-CPU outermost-scope state.
+
+New tasks start with IF set. §3 describes how this interacts with the nesting count.
 
 ### 2. The wrapper: `switch_to(prev, next, irq: &InterruptGuard)`
 
@@ -130,11 +136,13 @@ from it.
 - **New tasks** begin at an entry trampoline. It first calls
   `end_inherited_interrupt_scope()`, which closes the scope the task switching to them
   opened (a new task has no guard of its own to drop), and then calls the task's
-  `fn() -> !`. The count therefore balances across *every* switch, and a new task runs
-  with the interrupt state that preceded the outermost scope. *(Amended 2026-11-24:
-  originally deferred to 2.2.4; implemented with #72.)* Whether that state is "enabled"
-  depends on the system having interrupts on at all, which needs the PIC/APIC set up
-  (2.2.4, #75). Today boot runs with them off, so tasks do too.
+  `fn() -> !`. The count therefore balances across *every* switch.
+- **The outermost "interrupts were enabled" bit is per task** *(amended by ADR-0009 §4)*.
+  At every switch, `switch_to` saves it into the outgoing task's `rflags.IF` as intent
+  (`outer OR NOT live`), and installs the incoming task's bit (`AND live`). A task
+  resumed after a voluntary switch therefore gets its own state back. A task preempted
+  inside an ISR resumes with IF = 0 until its `iretq`. A new task (IF set at creation)
+  runs with interrupts on once they are live, and off before then.
 - **Initial stack:** the trampoline is entered by `jmp`, not `call`, so the new task's
   `rsp` is set to `stack_top - 8`, 16-byte aligned minus 8. That is exactly what the System
   V ABI expects at function entry. The 8-byte slot holds 0 as a terminating return address

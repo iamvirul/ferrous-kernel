@@ -74,16 +74,40 @@ ADR-0004 safe point. The interrupt-enable state of a task's outermost scope beco
 ### 3. IRQ entry path
 
 - **Stub (asm, one per vector 32–47):**
-  1. push the nine caller-saved GPRs; after the CPU's 5-word frame RSP is 16-byte
+  1. if the interrupted context was ring 3 (`CS & 3` in the CPU frame), `swapgs`
+     followed by `lfence` (§3a);
+  2. push the nine caller-saved GPRs; after the CPU's 5-word frame RSP is 16-byte
      aligned;
-  2. `cld`;
-  3. `mov edi, vector`;
-  4. `call irq_dispatch`;
-  5. pop the registers and `iretq`.
+  3. `cld`;
+  4. `mov edi, vector`;
+  5. `call irq_dispatch`;
+  6. pop the registers; if returning to ring 3, `swapgs`; then `iretq`.
 
   There is **no `fxsave`**: the kernel is soft-float (Context 2), which a compile-time
-  `cfg(target_feature = "sse")` guard enforces. There is **no `swapgs`**: the IRQ path
-  never touches GS (`CpuLocal` is reached through its static, not `gs:`).
+  `cfg(target_feature = "sse")` guard enforces.
+
+### 3a. GS invariant *(amended after review: originally "no `swapgs`")*
+
+**Rule: whenever the CPU runs in ring 0, `GS_BASE` holds the kernel's `CpuLocal`, and
+`IA32_KERNEL_GS_BASE` holds the user's GS.** This is the Linux convention.
+
+- `cpu::init` sets `GS_BASE = &CpuLocal` and `KERNEL_GS_BASE = 0` (user GS). Previously
+  the two were swapped: in kernel mode `GS_BASE` was 0 and `CpuLocal` lived in
+  `KERNEL_GS_BASE`.
+- **Every entry from ring 3** executes `swapgs`: SYSCALL (unchanged), and IRQs and
+  exceptions whose frame shows CPL 3. **Every return to ring 3** does the same: SYSRET
+  (unchanged), IRQ `iretq`, and the first entry in `jump_to_user_mode`, which now
+  executes `swapgs` before its `iretq`. Kernel-to-kernel entries and returns never
+  `swapgs`.
+- Because ring-0 GS is the same for every task, **`switch_to` never touches GS**. This
+  closes the review's failure path, where a timer preempted task A in ring 3 and resumed
+  task B in the middle of a syscall with user GS still loaded. With the invariant, B
+  resumes with kernel GS like everything else in ring 0.
+- **User GS is 0 for every task today:** user code cannot change GS (no `wrgsbase`; CR4
+  FSGSBASE is off). Once user tasks can set their own GS base, `switch_to` must save and
+  restore `IA32_KERNEL_GS_BASE` per task.
+- The conditional `swapgs` is followed by `lfence` on both the swap and no-swap paths.
+  That is the SWAPGS speculation mitigation (CVE-2019-1125).
 - **Dispatcher (Rust, `extern "sysv64"`):**
   - **Timer (vector 32):** `TICKS += 1`; then, inside an `InterruptGuard`,
     `scheduler_tick()`; then the EOI; then, with no scope or lock held,
@@ -105,9 +129,16 @@ ADR-0004 safe point. The interrupt-enable state of a task's outermost scope beco
 The nesting count stays per-CPU: at a switch its depth is always 1 (asserted). But the
 **outermost "were interrupts enabled before"** bit now belongs to the *task*:
 
-- `switch_to` stores the outgoing value in `prev.registers.rflags` (the IF bit only;
-  that field was reserved until now). It then installs `next`'s saved bit **AND
-  "interrupts are live"**.
+- The saved bit records the task's **intent** *(amended after review)*: "should this
+  task run with interrupts enabled at depth 0?" It does not record the boot-time global
+  mask.
+- `switch_to` stores `outer_enabled OR NOT live` in `prev.registers.rflags` (the IF bit
+  only; that field was reserved until now). Before interrupts are live, every normal task
+  intends to have them, so its bit is saved as 1. Saving a raw 0 there would leave the
+  task with IF = 0 forever after `enable_interrupts()`; the idle task, which yields during
+  the boot self-tests, would hit exactly that.
+- `switch_to` then installs `next`'s saved bit **AND "interrupts are live"** as the
+  per-CPU outer state.
 - New tasks are created with IF set in that field, so they start with interrupts
   enabled once the system has them, and disabled before then.
 - A task preempted from an ISR saves the ISR's IF = 0. When it is resumed, it returns
@@ -239,7 +270,10 @@ ADR-0002 (GDT/TSS).
    - enable interrupts;
    - run the timer self-test:
      - the PIC masks read back;
-     - ticks grow while the CPU sits in `hlt`;
+     - the first ticks arrive within a **bounded timeout measured with the TSC**, which
+       does not depend on IRQ0. Without the timeout, a missing IRQ0 would hang the test
+       instead of failing it loudly;
+     - only after that is confirmed, ticks keep growing while the CPU sits in `hlt`;
      - two tasks that never yield are both preempted by the real timer;
      - the system stays stable through Steps 17–18 with the timer on.
 
@@ -256,3 +290,4 @@ ADR-0002 (GDT/TSS).
 ## Status History
 
 - 2026-11-24: Created (Status: Proposed); to be accepted before the Phase 2.2.4 implementation (#75) lands
+- 2026-11-24: Amended after CodeRabbit review (still Proposed). Added the GS invariant (§3a: kernel GS in ring 0, `swapgs` on every ring-3 entry and exit, `switch_to` never touches GS). The per-task IF bit now saves intent (`outer OR NOT live`), so tasks switched out before enablement stay preemptible. The self-test's first-tick wait uses a TSC timeout that does not depend on IRQ0
