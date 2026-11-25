@@ -87,6 +87,7 @@ ADRs have the following statuses:
 | ADR-0004 | [Scheduler Algorithm and Run Queue](ADR-0004-scheduler-algorithm.md) | Accepted | 2026-11-24 |
 | ADR-0007 | [System Call ABI and Dispatch](ADR-0007-system-call-abi-and-dispatch.md) | Accepted | 2026-11-24 |
 | ADR-0008 | [Context Switch Mechanism](ADR-0008-context-switch-mechanism.md) | Accepted | 2026-11-24 |
+| ADR-0009 | [Timer Interrupts and Preemption (PIC + PIT)](ADR-0009-timer-interrupts.md) | Proposed | 2026-11-24 |
 
 ---
 
