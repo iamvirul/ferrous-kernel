@@ -69,6 +69,32 @@ impl IrqNesting {
     pub const fn depth(&self) -> usize {
         self.depth
     }
+
+    /// Whether interrupts were enabled before the outermost active scope.
+    ///
+    /// # Panics
+    ///
+    /// If no scope is active (the value is meaningless then).
+    pub fn outermost_enabled(&self) -> bool {
+        assert!(self.depth > 0, "IrqNesting: no active scope");
+        self.enabled_before_outermost
+    }
+
+    /// Replace the outermost scope's "were interrupts enabled" bit and
+    /// return the old one.
+    ///
+    /// Used by the context switch (ADR-0009 §4): the bit belongs to the
+    /// *task* that opened the outermost scope, so on a switch the outgoing
+    /// task's bit is saved and the incoming task's is installed. The depth
+    /// is unchanged.
+    ///
+    /// # Panics
+    ///
+    /// If no scope is active.
+    pub fn replace_outermost_enabled(&mut self, enabled: bool) -> bool {
+        assert!(self.depth > 0, "IrqNesting: no active scope");
+        core::mem::replace(&mut self.enabled_before_outermost, enabled)
+    }
 }
 
 #[cfg(test)]
@@ -132,6 +158,38 @@ mod tests {
         assert!(n.exit());
         n.enter(false);
         assert!(!n.exit(), "a new outermost scope records its own state");
+    }
+
+    #[test]
+    fn replace_outermost_swaps_the_bit_and_keeps_depth() {
+        let mut n = IrqNesting::new();
+        n.enter(false); // outgoing task's switch scope: it had IF = 0
+        assert!(!n.replace_outermost_enabled(true), "returns the old bit");
+        assert!(n.outermost_enabled());
+        assert_eq!(n.depth(), 1);
+        assert!(n.exit(), "the incoming task's bit decides re-enabling");
+    }
+
+    #[test]
+    fn replaced_bit_governs_the_final_exit_even_when_nested() {
+        let mut n = IrqNesting::new();
+        n.enter(true);
+        n.enter(false);
+        n.replace_outermost_enabled(false);
+        assert!(!n.exit());
+        assert!(!n.exit(), "outermost bit was replaced with 'disabled'");
+    }
+
+    #[test]
+    #[should_panic(expected = "no active scope")]
+    fn replace_without_a_scope_panics() {
+        IrqNesting::new().replace_outermost_enabled(true);
+    }
+
+    #[test]
+    #[should_panic(expected = "no active scope")]
+    fn outermost_without_a_scope_panics() {
+        let _ = IrqNesting::new().outermost_enabled();
     }
 
     #[test]
